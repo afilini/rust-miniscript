@@ -98,10 +98,13 @@ pub mod policy;
 pub mod psbt;
 
 use std::str::FromStr;
-use std::{error, fmt, hash, str};
+use std::{cmp, error, fmt, hash, str};
 
 use bitcoin::blockdata::{opcodes, script};
 use bitcoin::hashes::{hash160, sha256, Hash};
+use bitcoin::util::bip32::{ExtendedPubKey, DerivationPath};
+use bitcoin::util::base58;
+use bitcoin::secp256k1;
 
 pub use descriptor::{Descriptor, SatisfiedConstraints};
 pub use miniscript::decode::Terminal;
@@ -136,6 +139,79 @@ impl MiniscriptKey for String {
     }
 }
 
+#[derive(Eq, Clone)]
+pub struct MiniscriptExtendedKey {
+    xpub: ExtendedPubKey,
+    path: DerivationPath,
+}
+
+impl MiniscriptExtendedKey {
+    fn derived_pubkey(&self) -> bitcoin::PublicKey {
+        self.xpub.derive_pub(&secp256k1::Secp256k1::new(), &self.path).unwrap().public_key
+    }
+}
+
+impl fmt::Display for MiniscriptExtendedKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}", self.xpub, &self.path.to_string()[1..])
+    }
+}
+
+impl fmt::Debug for MiniscriptExtendedKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}", self.xpub, &self.path.to_string()[1..])
+    }
+}
+
+impl str::FromStr for MiniscriptExtendedKey {
+    type Err = base58::Error;
+
+    fn from_str(inp: &str) -> Result<MiniscriptExtendedKey, base58::Error> {
+        let (range, path_str) = match inp.find("/") {
+            Some(index) => (..index, format!("m{}", &inp[index..])),
+            None => (..inp.len(), "m".into()),
+        };
+
+        Ok(MiniscriptExtendedKey {
+            xpub: ExtendedPubKey::from_str(&inp[range])?,
+            path: DerivationPath::from_str(&path_str).unwrap(),
+        })
+    }
+}
+
+impl MiniscriptKey for MiniscriptExtendedKey {
+    type Hash = hash160::Hash;
+
+    // TODO: will probably need a derivation index
+    fn to_pubkeyhash(&self) -> Self::Hash {
+        self.derived_pubkey().to_pubkeyhash()
+    }
+}
+
+impl Ord for MiniscriptExtendedKey {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        self.derived_pubkey().cmp(&other.derived_pubkey())
+    }
+}
+
+impl PartialOrd for MiniscriptExtendedKey {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+        Some(self.derived_pubkey().cmp(&other.derived_pubkey()))
+    }
+}
+
+impl PartialEq for MiniscriptExtendedKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.derived_pubkey() == other.derived_pubkey()
+    }
+}
+
+impl hash::Hash for MiniscriptExtendedKey {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        format!("{}", self).hash(state);
+    }
+}
+
 /// Trait describing public key types which can be converted to bitcoin pubkeys
 pub trait ToPublicKey: MiniscriptKey {
     /// Converts an object to a public key
@@ -163,6 +239,16 @@ pub trait ToPublicKey: MiniscriptKey {
 impl ToPublicKey for bitcoin::PublicKey {
     fn to_public_key(&self) -> bitcoin::PublicKey {
         *self
+    }
+
+    fn hash_to_hash160(hash: &hash160::Hash) -> hash160::Hash {
+        *hash
+    }
+}
+
+impl ToPublicKey for MiniscriptExtendedKey {
+    fn to_public_key(&self) -> bitcoin::PublicKey {
+        self.derived_pubkey()
     }
 
     fn hash_to_hash160(hash: &hash160::Hash) -> hash160::Hash {
