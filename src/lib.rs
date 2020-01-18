@@ -102,7 +102,7 @@ use std::{cmp, error, fmt, hash, str};
 
 use bitcoin::blockdata::{opcodes, script};
 use bitcoin::hashes::{hash160, sha256, Hash};
-use bitcoin::util::bip32::{ExtendedPubKey, DerivationPath};
+use bitcoin::util::bip32;
 use bitcoin::util::base58;
 use bitcoin::secp256k1;
 
@@ -139,10 +139,13 @@ impl MiniscriptKey for String {
     }
 }
 
-#[derive(Eq, Clone)]
+#[derive(Eq, Clone, Debug)]
 pub struct MiniscriptExtendedKey {
-    xpub: ExtendedPubKey,
-    path: DerivationPath,
+    master_fingerprint: Option<String>,
+    master_derivation: Option<bip32::DerivationPath>,
+    xpub: bip32::ExtendedPubKey,
+    path: bip32::DerivationPath,
+    final_index: DerivationIndex,
 }
 
 impl MiniscriptExtendedKey {
@@ -153,28 +156,83 @@ impl MiniscriptExtendedKey {
 
 impl fmt::Display for MiniscriptExtendedKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}{}", self.xpub, &self.path.to_string()[1..])
+        if let Some(ref fingerprint) = self.master_fingerprint {
+            write!(f, "[{}", fingerprint)?;
+            if let Some(ref path) = self.master_derivation {
+                write!(f, "{}", &path.to_string()[1..])?;
+            }
+            write!(f, "]")?;
+        }
+
+        write!(f, "{}{}{}", self.xpub, &self.path.to_string()[1..], self.final_index)
     }
 }
 
-impl fmt::Debug for MiniscriptExtendedKey {
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum DerivationIndex {
+    Fixed,
+    Normal,
+    Hardened,
+}
+
+impl fmt::Display for DerivationIndex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}{}", self.xpub, &self.path.to_string()[1..])
+        let chars = match *self {
+            Self::Fixed => "",
+            Self::Normal => "/*",
+            Self::Hardened => "/*'",
+        };
+
+        write!(f, "{}", chars)
     }
 }
 
 impl str::FromStr for MiniscriptExtendedKey {
-    type Err = base58::Error;
+    type Err = String;
 
-    fn from_str(inp: &str) -> Result<MiniscriptExtendedKey, base58::Error> {
-        let (range, path_str) = match inp.find("/") {
-            Some(index) => (..index, format!("m{}", &inp[index..])),
-            None => (..inp.len(), "m".into()),
+    fn from_str(inp: &str) -> Result<MiniscriptExtendedKey, Self::Err> {
+        let len = inp.len();
+
+        let (master_fingerprint, master_derivation, offset) = match inp.starts_with("[") {
+            false => (None, Ok(None), 0),
+            true => {
+                let master_fingerprint = &inp[1..9];
+                let close_bracket_index = &inp[9..].find("]").unwrap(); // required
+                let path = match *close_bracket_index > 0 {
+                    true => bip32::DerivationPath::from_str(&format!("m{}", &inp[9..9 + *close_bracket_index])), 
+                    false => Ok(bip32::DerivationPath::from(vec![])),
+                };
+
+                (Some(master_fingerprint.into()), path.and_then(|x| Ok(Some(x))), 9 + *close_bracket_index + 1)
+            }
         };
 
+        let (xpub_range, offset) = match &inp[offset..].find("/") {
+            Some(index) => (offset..offset + *index, offset + *index),
+            None => (offset..len, len),
+        };
+        let xpub = bip32::ExtendedPubKey::from_str(&inp[xpub_range]);
+
+        let (path, final_index, offset) = match &inp[offset..].starts_with("/") {
+            false => (Ok(bip32::DerivationPath::from(vec![])), DerivationIndex::Fixed, offset),
+            true => {
+                let (all, skip) = match &inp[len - 2..len] {
+                    "/*" => (DerivationIndex::Normal, 2),
+                    "*'" => (DerivationIndex::Hardened, 3), // TODO: only allowed for xprv
+                    _ => (DerivationIndex::Fixed, 0)
+                };
+
+                (bip32::DerivationPath::from_str(&format!("m{}", &inp[offset..len - skip])), all, len)
+            }
+        };
+
+        // TODO: errors
         Ok(MiniscriptExtendedKey {
-            xpub: ExtendedPubKey::from_str(&inp[range])?,
-            path: DerivationPath::from_str(&path_str).unwrap(),
+            master_fingerprint,
+            master_derivation: master_derivation.unwrap(),
+            xpub: xpub.unwrap(),
+            path: path.unwrap(),
+            final_index,
         })
     }
 }
