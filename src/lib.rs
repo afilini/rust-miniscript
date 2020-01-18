@@ -98,12 +98,12 @@ pub mod policy;
 pub mod psbt;
 
 use std::str::FromStr;
-use std::{cmp, error, fmt, hash, str};
+use std::{cmp, error, fmt, hash, ops, str};
 
 use bitcoin::blockdata::{opcodes, script};
 use bitcoin::hashes::{hash160, sha256, Hash};
-use bitcoin::util::bip32;
 use bitcoin::util::base58;
+use bitcoin::util::bip32;
 use bitcoin::secp256k1;
 
 pub use descriptor::{Descriptor, SatisfiedConstraints};
@@ -139,18 +139,53 @@ impl MiniscriptKey for String {
     }
 }
 
+#[derive(Eq, PartialEq, Clone, Debug)]
+pub enum ExtendedKey {
+    Public(bip32::ExtendedPubKey),
+    Private(bip32::ExtendedPrivKey),
+}
+
+impl fmt::Display for ExtendedKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExtendedKey::Public(ref key) => write!(f, "{}", key),
+            ExtendedKey::Private(ref key) => write!(f, "{}", key),
+        }
+    }
+}
+
+impl ExtendedKey {
+    fn derive_public_key<P: AsRef<[bip32::ChildNumber]>>(&self, path: &P) -> Result<bitcoin::PublicKey, bip32::Error> {
+        let ctx = secp256k1::Secp256k1::new();
+        Ok(match self {
+            ExtendedKey::Public(ref key) => key.derive_pub(&ctx, path)?.public_key,
+            ExtendedKey::Private(ref key) => key.derive_priv(&ctx, path)?.private_key.public_key(&ctx),
+        })
+    }
+
+    fn is_private(&self) -> bool {
+        match self {
+            ExtendedKey::Public(_) => false,
+            ExtendedKey::Private(_) => true,
+        }
+    }
+}
+
 #[derive(Eq, Clone, Debug)]
 pub struct MiniscriptExtendedKey {
     master_fingerprint: Option<String>,
     master_derivation: Option<bip32::DerivationPath>,
-    xpub: bip32::ExtendedPubKey,
+    key: ExtendedKey,
     path: bip32::DerivationPath,
     final_index: DerivationIndex,
 }
 
 impl MiniscriptExtendedKey {
     fn derived_pubkey(&self) -> bitcoin::PublicKey {
-        self.xpub.derive_pub(&secp256k1::Secp256k1::new(), &self.path).unwrap().public_key
+        let mut final_path: Vec<bip32::ChildNumber> = self.path.clone().into();
+        let other_path: Vec<bip32::ChildNumber> = self.final_index.into();
+        final_path.extend_from_slice(&other_path);
+        self.key.derive_public_key(&final_path).unwrap() 
     }
 }
 
@@ -164,7 +199,7 @@ impl fmt::Display for MiniscriptExtendedKey {
             write!(f, "]")?;
         }
 
-        write!(f, "{}{}{}", self.xpub, &self.path.to_string()[1..], self.final_index)
+        write!(f, "{}{}{}", self.key, &self.path.to_string()[1..], self.final_index)
     }
 }
 
@@ -184,6 +219,16 @@ impl fmt::Display for DerivationIndex {
         };
 
         write!(f, "{}", chars)
+    }
+}
+
+impl From<DerivationIndex> for Vec<bip32::ChildNumber> {
+    fn from(other: DerivationIndex) -> Self {
+        match other {
+            DerivationIndex::Fixed => vec![],
+            DerivationIndex::Normal => vec![bip32::ChildNumber::Normal{index: 0}],
+            DerivationIndex::Hardened => vec![bip32::ChildNumber::Hardened{index: 0}],
+        }
     }
 }
 
@@ -207,20 +252,29 @@ impl str::FromStr for MiniscriptExtendedKey {
             }
         };
 
-        let (xpub_range, offset) = match &inp[offset..].find("/") {
+        let (key_range, offset) = match &inp[offset..].find("/") {
             Some(index) => (offset..offset + *index, offset + *index),
             None => (offset..len, len),
         };
-        let xpub = bip32::ExtendedPubKey::from_str(&inp[xpub_range]);
+        let data = base58::from_check(&inp[key_range.clone()]).unwrap();
+        let key = match &data[0..4] {
+            [0x04u8, 0x88, 0xB2, 0x1E] | [0x04u8, 0x35, 0x87, 0xCF] => ExtendedKey::Public(bip32::ExtendedPubKey::from_str(&inp[key_range]).unwrap()),
+            [0x04u8, 0x88, 0xAD, 0xE4] | [0x04u8, 0x35, 0x83, 0x94] => ExtendedKey::Private(bip32::ExtendedPrivKey::from_str(&inp[key_range]).unwrap()),
+            _ => return Err("Error".to_string())
+        };
 
-        let (path, final_index, offset) = match &inp[offset..].starts_with("/") {
+        let (path, final_index, _) = match &inp[offset..].starts_with("/") {
             false => (Ok(bip32::DerivationPath::from(vec![])), DerivationIndex::Fixed, offset),
             true => {
                 let (all, skip) = match &inp[len - 2..len] {
                     "/*" => (DerivationIndex::Normal, 2),
-                    "*'" => (DerivationIndex::Hardened, 3), // TODO: only allowed for xprv
+                    "*'" => (DerivationIndex::Hardened, 3),
                     _ => (DerivationIndex::Fixed, 0)
                 };
+
+                if all == DerivationIndex::Hardened && !key.is_private() {
+                    return Err("private derivation".to_string());
+                }
 
                 (bip32::DerivationPath::from_str(&format!("m{}", &inp[offset..len - skip])), all, len)
             }
@@ -230,7 +284,7 @@ impl str::FromStr for MiniscriptExtendedKey {
         Ok(MiniscriptExtendedKey {
             master_fingerprint,
             master_derivation: master_derivation.unwrap(),
-            xpub: xpub.unwrap(),
+            key,
             path: path.unwrap(),
             final_index,
         })
