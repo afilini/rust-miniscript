@@ -31,6 +31,7 @@ use std::{fmt, str};
 use bitcoin;
 use bitcoin::blockdata::script;
 
+pub mod iter;
 pub mod astelem;
 pub mod decode;
 pub mod lex;
