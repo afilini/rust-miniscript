@@ -58,7 +58,7 @@ impl<Pk: MiniscriptKey> Miniscript<Pk> {
     ///   their hashes
     ///
     /// Unlike these functions, [keys_only] returns an `Option` value with `Vec`, not an iterator.
-    pub fn keys_only(&self) -> Option<Vec<Pk>> {
+    pub fn all_pubkeys_only(&self) -> Option<Vec<Pk>> {
         self.iter_keys_and_hashes()
             .try_fold(Vec::<Pk>::new(), |mut keys, item| match item {
                 KeyOrHash::HashedPubkey(hash) => None,
@@ -90,6 +90,36 @@ impl<Pk: MiniscriptKey> Miniscript<Pk> {
 
             Thresh(_, node_vec) => node_vec.iter().map(Arc::deref).collect(),
 
+            _ => vec![],
+        }
+    }
+
+    pub fn pubkeys(&self) -> Vec<Pk> {
+        match self.node.clone() {
+            Terminal::Pk(key) => vec![key],
+            Terminal::ThreshM(_, keys) => keys,
+            _ => vec![],
+        }
+    }
+
+    pub fn pubkey_hashes(&self) -> Vec<Pk::Hash> {
+        match self.node.clone() {
+            Terminal::PkH(hash) => vec![hash],
+            Terminal::Pk(key) => vec![key.to_pubkeyhash()],
+            Terminal::ThreshM(_, keys) =>
+                keys.iter().map(Pk::to_pubkeyhash).collect(),
+            _ => vec![],
+        }
+    }
+
+    pub fn pubkeys_and_hashes(&self) -> Vec<KeyOrHash<Pk>> {
+        use self::KeyOrHash::*;
+        match self.node.clone() {
+            Terminal::PkH(hash) => vec![HashedPubkey(hash)],
+            Terminal::Pk(key) => vec![PlainPubkey(key)],
+            Terminal::ThreshM(_, keys) => {
+                keys.into_iter().map(PlainPubkey).collect()
+            }
             _ => vec![],
         }
     }
