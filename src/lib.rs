@@ -328,6 +328,11 @@ pub enum Error {
     ///Incorrect Script pubkey Hash for the descriptor. This is used for both
     /// `Sh` and `Wsh` descriptors
     IncorrectScriptHash,
+    /// Returned by `Miniscript::replace_pubkeys_and_hashes` in case when the processor has
+    /// provided a public key hash instead of public key for a `ThreshM` terminal
+    UnexpectedPubkeyHash,
+    /// Pubkey processor failure
+    PubkeyProcessorFailure,
 }
 
 #[doc(hidden)]
@@ -408,6 +413,12 @@ impl fmt::Display for Error {
             }
             Error::IncorrectPubkeyHash => {
                 f.write_str("Incorrect pubkey hash for given descriptor pkh/wpkh")
+            }
+            Error::UnexpectedPubkeyHash => {
+                f.write_str("Was expecting public key, not a public key hash")
+            }
+            Error::PubkeyProcessorFailure => {
+                f.write_str("Internal fialure of the public key processor")
             }
         }
     }

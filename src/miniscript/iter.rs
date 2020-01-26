@@ -13,44 +13,45 @@
 //
 
 use super::decode::Terminal;
+use super::Error;
 use super::{Miniscript, MiniscriptKey};
 use std::collections::VecDeque;
 use std::ops::Deref;
 use std::sync::Arc;
 
 /// Iterator-related extensions for [Miniscript]
-impl<Pk: MiniscriptKey> Miniscript<Pk> {
+impl<PK: MiniscriptKey> Miniscript<PK> {
     /// Creates a new [Iter] iterator that will iterate over all [Miniscript] items within
     /// AST by traversing its branches. For the specific algorithm please see
     /// [Iter::next] function.
-    pub fn iter(&self) -> Iter<Pk> {
+    pub fn iter(&self) -> Iter<PK> {
         Iter::new(self)
     }
 
     /// Creates a new [PubkeyIter] iterator that will iterate over all plain public keys (and not
     /// key hash values) present in [Miniscript] items within AST by traversing all its branches.
     /// For the specific algorithm please see [PubkeyIter::next] function.
-    pub fn iter_pubkeys(&self) -> PubkeyIter<Pk> {
+    pub fn iter_pubkeys(&self) -> PubkeyIter<PK> {
         PubkeyIter::new(self)
     }
 
     /// Creates a new [PubkeyHashIter] iterator that will iterate over all plain public keys (and not
     /// key hash values) present in Miniscript items within AST by traversing all its branches.
     /// For the specific algorithm please see [PubkeyHashIter::next] function.
-    pub fn iter_pubkey_hashes(&self) -> PubkeyHashIter<Pk> {
+    pub fn iter_pubkey_hashes(&self) -> PubkeyHashIter<PK> {
         PubkeyHashIter::new(self)
     }
 
     /// Creates a new [PubkeyAndHashIter] iterator that will iterate over all plain public keys and
     /// key hash values present in Miniscript items within AST by traversing all its branches.
     /// For the specific algorithm please see [PubeyAndHashIter::next] function.
-    pub fn iter_pubkeys_and_hashes(&self) -> PubkeyAndHashIter<Pk> {
+    pub fn iter_pubkeys_and_hashes(&self) -> PubkeyAndHashIter<PK> {
         PubkeyAndHashIter::new(self)
     }
 
     /// Enumerates all child nodes of the current AST node (`self`) and returns a `Vec` referencing
     /// them.
-    pub fn branches(&self) -> Vec<&Miniscript<Pk>> {
+    pub fn branches(&self) -> Vec<&Miniscript<PK>> {
         use Terminal::*;
         match &self.node {
             Pk(_) | PkH(_) | ThreshM(_, _) => vec![],
@@ -79,7 +80,7 @@ impl<Pk: MiniscriptKey> Miniscript<Pk> {
     /// NB: The function analyzes only single miniscript item and not any of its descendants in AST.
     /// To obtain a list of all public keys within AST use [`iter_pubkeys()`] function, for example
     /// `miniscript.iter_pubkeys().collect()`.
-    pub fn pubkeys(&self) -> Vec<Pk> {
+    pub fn get_pubkeys(&self) -> Vec<PK> {
         match self.node.clone() {
             Terminal::Pk(key) => vec![key],
             Terminal::ThreshM(_, keys) => keys,
@@ -96,12 +97,11 @@ impl<Pk: MiniscriptKey> Miniscript<Pk> {
     /// NB: The function analyzes only single miniscript item and not any of its descendants in AST.
     /// To obtain a list of all public key hashes within AST use [`iter_pubkey_hashes()`] function,
     /// for example `miniscript.iter_pubkey_hashes().collect()`.
-    pub fn pubkey_hashes(&self) -> Vec<Pk::Hash> {
+    pub fn get_pubkey_hashes(&self) -> Vec<PK::Hash> {
         match self.node.clone() {
             Terminal::PkH(hash) => vec![hash],
             Terminal::Pk(key) => vec![key.to_pubkeyhash()],
-            Terminal::ThreshM(_, keys) =>
-                keys.iter().map(Pk::to_pubkeyhash).collect(),
+            Terminal::ThreshM(_, keys) => keys.iter().map(PK::to_pubkeyhash).collect(),
             _ => vec![],
         }
     }
@@ -113,16 +113,95 @@ impl<Pk: MiniscriptKey> Miniscript<Pk> {
     /// NB: The function analyzes only single miniscript item and not any of its descendants in AST.
     /// To obtain a list of all public keys or hashes within AST use [`iter_pubkeys_and_hashes()`]
     /// function, for example `miniscript.iter_pubkeys_and_hashes().collect()`.
-    pub fn pubkeys_and_hashes(&self) -> Vec<PubkeyOrHash<Pk>> {
+    pub fn get_pubkeys_and_hashes(&self) -> Vec<PubkeyOrHash<PK>> {
         use self::PubkeyOrHash::*;
         match self.node.clone() {
             Terminal::PkH(hash) => vec![HashedPubkey(hash)],
             Terminal::Pk(key) => vec![PlainPubkey(key)],
-            Terminal::ThreshM(_, keys) => {
-                keys.into_iter().map(PlainPubkey).collect()
-            }
+            Terminal::ThreshM(_, keys) => keys.into_iter().map(PlainPubkey).collect(),
             _ => vec![],
         }
+    }
+
+    /// Iterates over all public keys and public key hashes by traversing the complete Miniscript
+    /// AST; calls `pk_processor` callback providing each of the found public key or hash and
+    /// replaces miniscript item with the new one constructed out of results returned from the
+    /// callback. The function returns a new Miniscript AST.
+    pub fn replace_pubkeys_and_hashes(
+        &self,
+        processor: &impl Fn(PubkeyOrHash<PK>) -> Option<PubkeyOrHash<PK>>,
+    ) -> Result<Self, Error> {
+        use self::PubkeyOrHash::*;
+        use Terminal::*;
+
+        macro_rules! process {
+            [ $value:ident ] => (
+                Arc::new($value.replace_pubkeys_and_hashes(processor)?)
+            )
+        }
+
+        let node = match &self.node {
+            Pk(key) => {
+                match processor(PlainPubkey(key.clone())).ok_or(Error::PubkeyProcessorFailure)? {
+                    PlainPubkey(key) => Pk(key),
+                    HashedPubkey(keyhash) => PkH(keyhash),
+                }
+            }
+            PkH(keyhash) => match processor(HashedPubkey(keyhash.clone()))
+                .ok_or(Error::PubkeyProcessorFailure)?
+            {
+                PlainPubkey(key) => Pk(key),
+                HashedPubkey(keyhash) => PkH(keyhash),
+            },
+            ThreshM(count, keys) => ThreshM(
+                *count,
+                keys.into_iter()
+                    .try_fold(Vec::<PK>::new(), |mut vec, key| {
+                        match processor(PlainPubkey(key.clone()))
+                            .ok_or(Error::PubkeyProcessorFailure)?
+                        {
+                            PlainPubkey(key) => {
+                                vec.push(key);
+                                Ok(vec)
+                            }
+                            HashedPubkey(_) => Err(Error::UnexpectedPubkeyHash),
+                        }
+                    })?,
+            ),
+
+            Alt(node) => Alt(process![node]),
+            Swap(node) => Swap(process![node]),
+            Check(node) => Check(process![node]),
+            DupIf(node) => DupIf(process![node]),
+            Verify(node) => Verify(process![node]),
+            NonZero(node) => NonZero(process![node]),
+            ZeroNotEqual(node) => ZeroNotEqual(process![node]),
+
+            AndV(node1, node2) => AndV(process![node1], process![node2]),
+            AndB(node1, node2) => AndB(process![node1], process![node2]),
+            OrB(node1, node2) => OrB(process![node1], process![node2]),
+            OrD(node1, node2) => OrD(process![node1], process![node2]),
+            OrC(node1, node2) => OrC(process![node1], process![node2]),
+            OrI(node1, node2) => OrI(process![node1], process![node2]),
+
+            AndOr(node1, node2, node3) => AndOr(process![node1], process![node2], process![node3]),
+
+            Thresh(count, node_vec) => Thresh(
+                *count,
+                node_vec
+                    .into_iter()
+                    .try_fold::<_, _, Result<Vec<Arc<Miniscript<PK>>>, Error>>(
+                        Vec::<Arc<Miniscript<PK>>>::new(),
+                        |mut vec, ms| {
+                            vec.push(process![ms]);
+                            Ok(vec)
+                        },
+                    )?,
+            ),
+
+            _ => self.node.clone(),
+        };
+        Ok(Miniscript { node, ..*self })
     }
 }
 
@@ -207,7 +286,7 @@ impl<'a, Pk: MiniscriptKey> Iterator for PubkeyIter<'a, Pk> {
     type Item = Pk;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let data= self.node_iter.next()?.pubkeys();
+        let data = self.node_iter.next()?.get_pubkeys();
         self.keys_buff = VecDeque::from(data);
         self.keys_buff.pop_front()
     }
@@ -233,7 +312,7 @@ impl<'a, Pk: MiniscriptKey> Iterator for PubkeyHashIter<'a, Pk> {
     type Item = Pk::Hash;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let data= self.node_iter.next()?.pubkey_hashes();
+        let data = self.node_iter.next()?.get_pubkey_hashes();
         self.keys_buff = VecDeque::from(data);
         self.keys_buff.pop_front()
     }
@@ -276,12 +355,12 @@ impl<'a, Pk: MiniscriptKey> PubkeyAndHashIter<'a, Pk> {
     /// and consumes the iterator object.
     pub fn pubkeys_only(mut self) -> Option<Vec<Pk>> {
         self.try_fold(Vec::<Pk>::new(), |mut keys, item| match item {
-                PubkeyOrHash::HashedPubkey(hash) => None,
-                PubkeyOrHash::PlainPubkey(key) => {
-                    keys.push(key);
-                    Some(keys)
-                }
-            })
+            PubkeyOrHash::HashedPubkey(hash) => None,
+            PubkeyOrHash::PlainPubkey(key) => {
+                keys.push(key);
+                Some(keys)
+            }
+        })
     }
 }
 
@@ -292,7 +371,7 @@ impl<'a, Pk: MiniscriptKey> Iterator for PubkeyAndHashIter<'a, Pk> {
         use self::PubkeyOrHash::*;
 
         self.keys_buff.pop_front().or_else(|| {
-            let data= self.node_iter.next()?.pubkeys_and_hashes();
+            let data = self.node_iter.next()?.get_pubkeys_and_hashes();
             self.keys_buff = VecDeque::from(data);
             self.keys_buff.pop_front()
         })
