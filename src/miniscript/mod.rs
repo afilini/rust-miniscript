@@ -38,12 +38,14 @@ pub(crate) mod context;
 pub mod decode;
 pub mod lex;
 pub mod satisfy;
+pub mod signer;
 pub mod types;
 
 use self::lex::{lex, TokenIter};
 use self::types::Property;
 pub use miniscript::context::ScriptContext;
 use miniscript::decode::Terminal;
+use miniscript::signer::*;
 use miniscript::types::extra_props::ExtData;
 use miniscript::types::Type;
 
@@ -301,6 +303,40 @@ where
         } else {
             Ok(ms)
         }
+    }
+}
+
+impl<Pk, Ctx> str::FromStr for MiniscriptWithSigners<Pk, Ctx>
+where
+    Pk: SplitSecret,
+    Ctx: ScriptContext,
+    <Pk as str::FromStr>::Err: ToString,
+    <<Pk as MiniscriptKey>::Hash as str::FromStr>::Err: ToString,
+{
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<MiniscriptWithSigners<Pk, Ctx>, Error> {
+        let mut signers = SignersContainer::new();
+
+        let miniscript = Miniscript::<Pk, Ctx>::from_str(s)?;
+        let miniscript = miniscript
+            .translate_pk(
+                &mut |pk: &Pk| {
+                    let (pk, secret) = pk.split_secret();
+                    if let Some((id, signer)) = secret {
+                        signers.add_external(id, signer);
+                    }
+
+                    Result::<_, ()>::Ok(pk)
+                },
+                &mut |pkh: &<Pk as MiniscriptKey>::Hash| Ok(pkh.clone()),
+            )
+            .expect("Translation fn can't fail.");
+
+        Ok(MiniscriptWithSigners {
+            miniscript,
+            signers,
+        })
     }
 }
 
