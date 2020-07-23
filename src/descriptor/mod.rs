@@ -32,11 +32,11 @@ use std::fmt;
 use std::hash;
 use std::str::{self, FromStr};
 
+use super::signer::{DescriptorWithSigners, Signer, SignerId, SignersContainer, SplitSecret};
 use expression;
 use miniscript;
 use miniscript::context::ScriptContextError;
 use miniscript::{Legacy, Miniscript, Segwitv0};
-use super::signer::{DescriptorWithSigners, Signer, SignerId, SignersContainer, SplitSecret};
 use Error;
 use MiniscriptKey;
 use Satisfier;
@@ -115,19 +115,21 @@ impl Ord for DescriptorKeyWithSecrets {
     fn cmp(&self, other: &DescriptorKeyWithSecrets) -> cmp::Ordering {
         match (self, other) {
             (
-                DescriptorKeyWithSecrets::ExtendedKey((a, _)),
-                DescriptorKeyWithSecrets::ExtendedKey((b, _)),
-            ) => a.cmp(b),
+                &DescriptorKeyWithSecrets::ExtendedKey((ref a, _)),
+                &DescriptorKeyWithSecrets::ExtendedKey((ref b, _)),
+            ) => a.cmp(&b),
             (
-                DescriptorKeyWithSecrets::SingleKey((a, _)),
-                DescriptorKeyWithSecrets::SingleKey((b, _)),
-            ) => a.cmp(b),
-            (DescriptorKeyWithSecrets::ExtendedKey(_), DescriptorKeyWithSecrets::SingleKey(_)) => {
-                cmp::Ordering::Less
-            }
-            (DescriptorKeyWithSecrets::SingleKey(_), DescriptorKeyWithSecrets::ExtendedKey(_)) => {
-                cmp::Ordering::Greater
-            }
+                &DescriptorKeyWithSecrets::SingleKey((a, _)),
+                &DescriptorKeyWithSecrets::SingleKey((b, _)),
+            ) => a.cmp(&b),
+            (
+                &DescriptorKeyWithSecrets::ExtendedKey(_),
+                &DescriptorKeyWithSecrets::SingleKey(_),
+            ) => cmp::Ordering::Less,
+            (
+                &DescriptorKeyWithSecrets::SingleKey(_),
+                &DescriptorKeyWithSecrets::ExtendedKey(_),
+            ) => cmp::Ordering::Greater,
         }
     }
 }
@@ -136,13 +138,13 @@ impl PartialEq for DescriptorKeyWithSecrets {
     fn eq(&self, other: &DescriptorKeyWithSecrets) -> bool {
         match (self, other) {
             (
-                DescriptorKeyWithSecrets::ExtendedKey((a, _)),
-                DescriptorKeyWithSecrets::ExtendedKey((b, _)),
-            ) => a.eq(b),
+                &DescriptorKeyWithSecrets::ExtendedKey((ref a, _)),
+                &DescriptorKeyWithSecrets::ExtendedKey((ref b, _)),
+            ) => a.eq(&b),
             (
-                DescriptorKeyWithSecrets::SingleKey((a, _)),
-                DescriptorKeyWithSecrets::SingleKey((b, _)),
-            ) => a.eq(b),
+                &DescriptorKeyWithSecrets::SingleKey((ref a, _)),
+                &DescriptorKeyWithSecrets::SingleKey((ref b, _)),
+            ) => a.eq(&b),
             _ => false,
         }
     }
@@ -153,8 +155,8 @@ impl Eq for DescriptorKeyWithSecrets {}
 impl fmt::Display for DescriptorKeyWithSecrets {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            DescriptorKeyWithSecrets::ExtendedKey((xpub, _)) => write!(f, "[SEC] {}", xpub),
-            DescriptorKeyWithSecrets::SingleKey((pubkey, _)) => write!(f, "[SEC] {}", pubkey),
+            &DescriptorKeyWithSecrets::ExtendedKey((ref xpub, _)) => write!(f, "[SEC] {}", xpub),
+            &DescriptorKeyWithSecrets::SingleKey((ref pubkey, _)) => write!(f, "[SEC] {}", pubkey),
         }
     }
 }
@@ -162,8 +164,8 @@ impl fmt::Display for DescriptorKeyWithSecrets {
 impl hash::Hash for DescriptorKeyWithSecrets {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         match self {
-            DescriptorKeyWithSecrets::ExtendedKey((xpub, _)) => xpub.hash(state),
-            DescriptorKeyWithSecrets::SingleKey((pubkey, _)) => pubkey.hash(state),
+            &DescriptorKeyWithSecrets::ExtendedKey((ref xpub, _)) => xpub.hash(state),
+            &DescriptorKeyWithSecrets::SingleKey((ref pubkey, _)) => pubkey.hash(state),
         }
     }
 }
@@ -220,8 +222,8 @@ impl FromStr for DescriptorKeyWithSecrets {
 }
 
 impl<K: Display> Display for DescriptorXKey<K> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if let Some((master_id, ref master_deriv)) = &self.source {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        if let &Some((master_id, ref master_deriv)) = &self.source {
             f.write_char('[')?;
             write!(f, "{}", master_id)?;
             fmt_derivation_path(f, master_deriv)?;
@@ -241,7 +243,7 @@ impl MiniscriptKey for DescriptorKeyWithSecrets {
 
     fn to_pubkeyhash(&self) -> Self::Hash {
         match self {
-            DescriptorKeyWithSecrets::ExtendedKey((xpub, _)) => {
+            &DescriptorKeyWithSecrets::ExtendedKey((ref xpub, _)) => {
                 let ctx = Secp256k1::verification_only();
                 xpub.xkey
                     .derive_pub(&ctx, &xpub.derivation_path)
@@ -249,7 +251,7 @@ impl MiniscriptKey for DescriptorKeyWithSecrets {
                     .public_key
                     .to_pubkeyhash()
             }
-            DescriptorKeyWithSecrets::SingleKey((pubkey, _)) => pubkey.to_pubkeyhash(),
+            &DescriptorKeyWithSecrets::SingleKey((pubkey, _)) => pubkey.to_pubkeyhash(),
         }
     }
 }
@@ -286,15 +288,15 @@ impl DescriptorXKey<ExtendedPrivKey> {
 
         let source = if !deriv_on_hardened.as_ref().is_empty() {
             match &self.source {
-                Some((fingerprint, source_path)) => Some((
-                    *fingerprint,
+                &Some((fingerprint, ref source_path)) => Some((
+                    fingerprint,
                     source_path
                         .into_iter()
                         .chain(deriv_on_hardened.into_iter())
                         .cloned()
                         .collect(),
                 )),
-                None => Some((self.xkey.fingerprint(&secp), deriv_on_hardened)),
+                &None => Some((self.xkey.fingerprint(&secp), deriv_on_hardened)),
             }
         } else {
             self.source.clone()
@@ -313,15 +315,15 @@ impl DescriptorXKey<ExtendedPrivKey> {
 pub struct DescriptorKeyParseError(&'static str);
 
 impl Display for DescriptorKey {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            DescriptorKey::PubKey(pk) => pk.fmt(f),
-            DescriptorKey::XPub(xpub) => xpub.fmt(f),
+            &DescriptorKey::PubKey(pk) => pk.fmt(f),
+            &DescriptorKey::XPub(ref xpub) => xpub.fmt(f),
         }
     }
 }
 
-fn fmt_derivation_path(f: &mut Formatter<'_>, path: &DerivationPath) -> std::fmt::Result {
+fn fmt_derivation_path(f: &mut Formatter, path: &DerivationPath) -> fmt::Result {
     for child in path {
         write!(f, "/{}", child)?;
     }
@@ -448,8 +450,8 @@ impl DescriptorKey {
         assert!(path.into_iter().all(|c| c.is_normal()));
 
         match self {
-            DescriptorKey::PubKey(pk) => DescriptorKey::PubKey(*pk),
-            DescriptorKey::XPub(xpub) => {
+            &DescriptorKey::PubKey(pk) => DescriptorKey::PubKey(pk),
+            &DescriptorKey::XPub(ref xpub) => {
                 if xpub.is_wildcard {
                     DescriptorKey::XPub(DescriptorXKey {
                         source: xpub.source.clone(),
@@ -474,8 +476,8 @@ impl MiniscriptKey for DescriptorKey {
 
     fn to_pubkeyhash(&self) -> Self::Hash {
         match self {
-            DescriptorKey::PubKey(pk) => pk.to_pubkeyhash(),
-            DescriptorKey::XPub(xpub) => {
+            &DescriptorKey::PubKey(pk) => pk.to_pubkeyhash(),
+            &DescriptorKey::XPub(ref xpub) => {
                 let ctx = Secp256k1::verification_only();
                 xpub.xkey
                     .derive_pub(&ctx, &xpub.derivation_path)
@@ -490,28 +492,23 @@ impl MiniscriptKey for DescriptorKey {
 impl SplitSecret for DescriptorKeyWithSecrets {
     type Public = DescriptorKey;
 
-    fn split_secret(
-        &self,
-    ) -> (
-        Self::Public,
-        Option<(SignerId<Self::Public>, Box<dyn Signer>)>,
-    ) {
+    fn split_secret(&self) -> (Self::Public, Option<(SignerId<Self::Public>, Box<Signer>)>) {
         match self {
-            DescriptorKeyWithSecrets::ExtendedKey((xpub, option_xprv)) => (
+            &DescriptorKeyWithSecrets::ExtendedKey((ref xpub, ref option_xprv)) => (
                 DescriptorKey::XPub(xpub.clone()),
                 option_xprv.as_ref().map(|xprv| {
                     (
                         SignerId::Fingerprint(xprv.xkey.fingerprint(&Secp256k1::new())),
-                        Box::new(xprv.clone()) as Box<dyn Signer>,
+                        Box::new(xprv.clone()) as Box<Signer>,
                     )
                 }),
             ),
-            DescriptorKeyWithSecrets::SingleKey((pubkey, option_sk)) => (
-                DescriptorKey::PubKey(*pubkey),
+            &DescriptorKeyWithSecrets::SingleKey((pubkey, option_sk)) => (
+                DescriptorKey::PubKey(pubkey),
                 option_sk.as_ref().map(|sk| {
                     (
                         SignerId::PkHash(pubkey.to_pubkeyhash()),
-                        Box::new(sk.clone()) as Box<dyn Signer>,
+                        Box::new(sk.clone()) as Box<Signer>,
                     )
                 }),
             ),
@@ -522,8 +519,8 @@ impl SplitSecret for DescriptorKeyWithSecrets {
 impl ToPublicKey for DescriptorKey {
     fn to_public_key(&self) -> PublicKey {
         match self {
-            DescriptorKey::PubKey(pk) => *pk,
-            DescriptorKey::XPub(xpub) => {
+            &DescriptorKey::PubKey(pk) => pk,
+            &DescriptorKey::XPub(ref xpub) => {
                 let ctx = Secp256k1::verification_only();
                 xpub.xkey
                     .derive_pub(&ctx, &xpub.derivation_path)
@@ -539,7 +536,7 @@ impl ToPublicKey for DescriptorKey {
 }
 
 impl Display for DescriptorKeyParseError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         f.write_str(self.0)
     }
 }
@@ -873,8 +870,11 @@ impl<Pk: MiniscriptKey + ToPublicKey> Descriptor<Pk> {
 impl Descriptor<DescriptorKey> {
     /// Derives all wildcard keys in the descriptor using the supplied `path`
     pub fn derive(&self, path: &[ChildNumber]) -> Descriptor<DescriptorKey> {
-        self.translate_pk(|pk| Result::<_, ()>::Ok(pk.derive(path)), |pkh| Ok(*pkh))
-            .expect("Translation fn can't fail.")
+        self.translate_pk(
+            |pk| -> Result<DescriptorKey, ()> { Ok(pk.derive(path)) },
+            |pkh| Ok(*pkh),
+        )
+        .expect("Translation fn can't fail.")
     }
 }
 
@@ -964,13 +964,13 @@ where
         let descriptor: Descriptor<Pk> = expression::FromTree::from_tree(top)?;
         let descriptor = descriptor
             .translate_pk(
-                &mut |pk: &Pk| {
+                &mut |pk: &Pk| -> Result<<Pk as SplitSecret>::Public, ()> {
                     let (pk, secret) = pk.split_secret();
                     if let Some((id, signer)) = secret {
                         signers.add_external(id, signer);
                     }
 
-                    Result::<_, ()>::Ok(pk)
+                    Ok(pk)
                 },
                 &mut |pkh: &<Pk as MiniscriptKey>::Hash| Ok(pkh.clone()),
             )
@@ -1062,9 +1062,9 @@ mod tests {
     use bitcoin::blockdata::{opcodes, script};
     use bitcoin::hashes::hex::FromHex;
     use bitcoin::hashes::{hash160, sha256};
-    use bitcoin::util::bip32::{ChildNumber, DerivationPath, ExtendedPubKey};
+    use bitcoin::util::bip32::{ChildNumber, DerivationPath, ExtendedPubKey, Fingerprint};
     use bitcoin::{self, secp256k1, PublicKey};
-    use descriptor::{DescriptorKey, DescriptorXPub};
+    use descriptor::{DescriptorKey, DescriptorXKey};
     use miniscript::satisfy::BitcoinSig;
     use std::collections::HashMap;
     use std::str::FromStr;
@@ -1532,9 +1532,9 @@ mod tests {
     #[test]
     fn parse_descriptor_key() {
         let key = "[d34db33f/44'/0'/0']xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL/1/*";
-        let expected = DescriptorKey::XPub(DescriptorXPub {
+        let expected = DescriptorKey::XPub(DescriptorXKey {
             source: Some((
-                [0xd3, 0x4d, 0xb3, 0x3f],
+                Fingerprint::from(&[0xd3, 0x4d, 0xb3, 0x3f][..]),
                 (&[
                     ChildNumber::from_hardened_idx(44).unwrap(),
                     ChildNumber::from_hardened_idx(0).unwrap(),
@@ -1542,7 +1542,7 @@ mod tests {
                 ][..])
                 .into(),
             )),
-            xpub: ExtendedPubKey::from_str("xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL").unwrap(),
+            xkey: ExtendedPubKey::from_str("xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL").unwrap(),
             derivation_path: (&[ChildNumber::from_normal_idx(1).unwrap()][..]).into(),
             is_wildcard: true,
         });
@@ -1550,9 +1550,9 @@ mod tests {
         assert_eq!(format!("{}", expected), key);
 
         let key = "xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL/1";
-        let expected = DescriptorKey::XPub(DescriptorXPub {
+        let expected = DescriptorKey::XPub(DescriptorXKey {
             source: None,
-            xpub: ExtendedPubKey::from_str("xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL").unwrap(),
+            xkey: ExtendedPubKey::from_str("xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL").unwrap(),
             derivation_path: (&[ChildNumber::from_normal_idx(1).unwrap()][..]).into(),
             is_wildcard: false,
         });
@@ -1560,9 +1560,9 @@ mod tests {
         assert_eq!(format!("{}", expected), key);
 
         let key = "xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL";
-        let expected = DescriptorKey::XPub(DescriptorXPub {
+        let expected = DescriptorKey::XPub(DescriptorXKey {
             source: None,
-            xpub: ExtendedPubKey::from_str("xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL").unwrap(),
+            xkey: ExtendedPubKey::from_str("xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL").unwrap(),
             derivation_path: DerivationPath::from(&[][..]),
             is_wildcard: false,
         });
@@ -1587,8 +1587,7 @@ mod tests {
 pk([d34db33f/44'/0'/0']xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL/1/*),\
 pk(xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL/1),\
 pk(03f28773c2d975288bc7d1d205c3748651b075fbc6610e58cddeeddf8f19405aa8))";
-        let policy: crate::policy::concrete::Policy<DescriptorKey> =
-            descriptor_str.parse().unwrap();
+        let policy: ::policy::concrete::Policy<DescriptorKey> = descriptor_str.parse().unwrap();
         let descriptor = Descriptor::Sh(policy.compile().unwrap());
         let derived_descriptor = descriptor.derive(&[ChildNumber::from_normal_idx(42).unwrap()]);
 
@@ -1596,7 +1595,7 @@ pk(03f28773c2d975288bc7d1d205c3748651b075fbc6610e58cddeeddf8f19405aa8))";
 pk([d34db33f/44'/0'/0']xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL/1/42),\
 pk(xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL/1),\
 pk(03f28773c2d975288bc7d1d205c3748651b075fbc6610e58cddeeddf8f19405aa8))";
-        let res_policy: crate::policy::concrete::Policy<DescriptorKey> =
+        let res_policy: ::policy::concrete::Policy<DescriptorKey> =
             res_descriptor_str.parse().unwrap();
         let res_descriptor = Descriptor::Sh(res_policy.compile().unwrap());
 

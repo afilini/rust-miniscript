@@ -21,8 +21,9 @@ use std::fmt;
 
 use bitcoin::util::bip32::{ExtendedPrivKey, Fingerprint};
 use bitcoin::util::psbt;
+use bitcoin::PrivateKey;
 
-use crate::descriptor::{Descriptor, DescriptorXKey};
+use super::descriptor::{Descriptor, DescriptorXKey};
 use miniscript::satisfy::BitcoinSig;
 use miniscript::{Miniscript, ScriptContext};
 use MiniscriptKey;
@@ -52,12 +53,7 @@ pub trait SplitSecret: MiniscriptKey {
 
     /// Do the split, always returns the public part, optionally also the signer and the correct
     /// identifier
-    fn split_secret(
-        &self,
-    ) -> (
-        Self::Public,
-        Option<(SignerId<Self::Public>, Box<dyn Signer>)>,
-    );
+    fn split_secret(&self) -> (Self::Public, Option<(SignerId<Self::Public>, Box<Signer>)>);
 }
 
 /// Trait for signers
@@ -73,7 +69,7 @@ impl Signer for DescriptorXKey<ExtendedPrivKey> {
     }
 }
 
-impl Signer for bitcoin::PrivateKey {
+impl Signer for PrivateKey {
     fn sign(&self, input: &psbt::Input) -> Result<BitcoinSig, SignerError> {
         Err(SignerError::UserCanceled)
     }
@@ -99,7 +95,7 @@ pub struct DescriptorWithSigners<Pk: SplitSecret> {
 
 /// Container for multiple signers associated to a `Miniscript<Pk, Ctx>` or a `Descriptor<Pk>`
 #[derive(Debug)]
-pub struct SignersContainer<Pk: MiniscriptKey>(HashMap<SignerId<Pk>, Box<dyn Signer>>);
+pub struct SignersContainer<Pk: MiniscriptKey>(HashMap<SignerId<Pk>, Box<Signer>>);
 
 impl<Pk: MiniscriptKey> SignersContainer<Pk> {
     /// Default constructor
@@ -109,16 +105,12 @@ impl<Pk: MiniscriptKey> SignersContainer<Pk> {
 
     /// Adds an external signer to the container for the specified id. Optionally returns the
     /// signer that was previosuly in the container, if any
-    pub fn add_external(
-        &mut self,
-        id: SignerId<Pk>,
-        signer: Box<dyn Signer>,
-    ) -> Option<Box<dyn Signer>> {
+    pub fn add_external(&mut self, id: SignerId<Pk>, signer: Box<Signer>) -> Option<Box<Signer>> {
         self.0.insert(id, signer)
     }
 
     /// Removes a signer from the container and returns it
-    pub fn remove(&mut self, id: SignerId<Pk>) -> Option<Box<dyn Signer>> {
+    pub fn remove(&mut self, id: SignerId<Pk>) -> Option<Box<Signer>> {
         self.0.remove(&id)
     }
 

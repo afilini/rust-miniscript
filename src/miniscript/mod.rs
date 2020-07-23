@@ -42,9 +42,9 @@ pub mod types;
 
 use self::lex::{lex, TokenIter};
 use self::types::Property;
+use super::signer::*;
 pub use miniscript::context::ScriptContext;
 use miniscript::decode::Terminal;
-use super::signer::*;
 use miniscript::types::extra_props::ExtData;
 use miniscript::types::Type;
 
@@ -301,13 +301,13 @@ where
 
         let miniscript = miniscript
             .translate_pk(
-                &mut |pk: &Pk| {
+                &mut |pk: &Pk| -> Result<<Pk as SplitSecret>::Public, ()> {
                     let (pk, secret) = pk.split_secret();
                     if let Some((id, signer)) = secret {
                         signers.add_external(id, signer);
                     }
 
-                    Result::<_, ()>::Ok(pk)
+                    Ok(pk)
                 },
                 &mut |pkh: &<Pk as MiniscriptKey>::Hash| Ok(pkh.clone()),
             )
