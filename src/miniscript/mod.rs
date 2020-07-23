@@ -38,14 +38,13 @@ pub(crate) mod context;
 pub mod decode;
 pub mod lex;
 pub mod satisfy;
-pub mod signer;
 pub mod types;
 
 use self::lex::{lex, TokenIter};
 use self::types::Property;
 pub use miniscript::context::ScriptContext;
 use miniscript::decode::Terminal;
-use miniscript::signer::*;
+use super::signer::*;
 use miniscript::types::extra_props::ExtData;
 use miniscript::types::Type;
 
@@ -279,6 +278,48 @@ where
     }
 }
 
+impl<Pk, Ctx> expression::FromTree for MiniscriptWithSigners<Pk, Ctx>
+where
+    Pk: SplitSecret,
+    Ctx: ScriptContext,
+    <Pk as str::FromStr>::Err: ToString,
+    <<Pk as MiniscriptKey>::Hash as str::FromStr>::Err: ToString,
+{
+    /// Parse an expression tree into a Miniscript and extracts all the signers from the secrets
+    /// contained in the keys. As a general rule, this should not be called directly; rather go
+    /// through the descriptor API.
+    fn from_tree(top: &expression::Tree) -> Result<MiniscriptWithSigners<Pk, Ctx>, Error> {
+        let mut signers = SignersContainer::new();
+
+        let inner: Terminal<Pk, Ctx> = expression::FromTree::from_tree(top)?;
+        let miniscript = Miniscript {
+            ty: Type::type_check(&inner, |_| None)?,
+            ext: ExtData::type_check(&inner, |_| None)?,
+            node: inner,
+            phantom: PhantomData,
+        };
+
+        let miniscript = miniscript
+            .translate_pk(
+                &mut |pk: &Pk| {
+                    let (pk, secret) = pk.split_secret();
+                    if let Some((id, signer)) = secret {
+                        signers.add_external(id, signer);
+                    }
+
+                    Result::<_, ()>::Ok(pk)
+                },
+                &mut |pkh: &<Pk as MiniscriptKey>::Hash| Ok(pkh.clone()),
+            )
+            .expect("Translation fn can't fail.");
+
+        Ok(MiniscriptWithSigners {
+            miniscript,
+            signers,
+        })
+    }
+}
+
 impl<Pk, Ctx> str::FromStr for Miniscript<Pk, Ctx>
 where
     Pk: MiniscriptKey,
@@ -316,27 +357,20 @@ where
     type Err = Error;
 
     fn from_str(s: &str) -> Result<MiniscriptWithSigners<Pk, Ctx>, Error> {
-        let mut signers = SignersContainer::new();
+        for ch in s.as_bytes() {
+            if *ch < 20 || *ch > 127 {
+                return Err(Error::Unprintable(*ch));
+            }
+        }
 
-        let miniscript = Miniscript::<Pk, Ctx>::from_str(s)?;
-        let miniscript = miniscript
-            .translate_pk(
-                &mut |pk: &Pk| {
-                    let (pk, secret) = pk.split_secret();
-                    if let Some((id, signer)) = secret {
-                        signers.add_external(id, signer);
-                    }
+        let top = expression::Tree::from_str(s)?;
+        let ms: MiniscriptWithSigners<Pk, Ctx> = expression::FromTree::from_tree(&top)?;
 
-                    Result::<_, ()>::Ok(pk)
-                },
-                &mut |pkh: &<Pk as MiniscriptKey>::Hash| Ok(pkh.clone()),
-            )
-            .expect("Translation fn can't fail.");
-
-        Ok(MiniscriptWithSigners {
-            miniscript,
-            signers,
-        })
+        if ms.miniscript.ty.corr.base != types::Base::B {
+            Err(Error::NonTopLevel(format!("{:?}", ms)))
+        } else {
+            Ok(ms)
+        }
     }
 }
 

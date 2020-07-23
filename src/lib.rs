@@ -96,6 +96,7 @@ pub mod expression;
 pub mod miniscript;
 pub mod policy;
 pub mod psbt;
+pub mod signer;
 
 use std::str::FromStr;
 use std::{error, fmt, hash, str};

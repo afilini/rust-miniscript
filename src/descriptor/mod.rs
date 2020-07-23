@@ -35,8 +35,8 @@ use std::str::{self, FromStr};
 use expression;
 use miniscript;
 use miniscript::context::ScriptContextError;
-use miniscript::signer::{Signer, SignerId, SplitSecret};
 use miniscript::{Legacy, Miniscript, Segwitv0};
+use super::signer::{DescriptorWithSigners, Signer, SignerId, SignersContainer, SplitSecret};
 use Error;
 use MiniscriptKey;
 use Satisfier;
@@ -80,15 +80,23 @@ pub enum Descriptor<Pk: MiniscriptKey> {
     ShWsh(Miniscript<Pk, Segwitv0>),
 }
 
+/// Generic enum for public keys in descriptors
 #[derive(Debug, Eq, PartialEq, Clone, Ord, PartialOrd, Hash)]
 pub enum DescriptorKey {
+    /// Single public key
     PubKey(bitcoin::PublicKey),
+    /// Extended public key, xpub or tpub
     XPub(DescriptorXKey<ExtendedPubKey>),
 }
 
+/// Generic enum for keys in descriptors that can also contain secrets. Generally, this type should
+/// only be used to enable `FromStr for MiniscriptWithSigners<Pk, Ctx>` since this type implements
+/// `SplitSecret`
 #[derive(Debug, Clone)]
 pub enum DescriptorKeyWithSecrets {
+    /// Individual public key, optionally with the corresponding private key
     SingleKey((bitcoin::PublicKey, Option<bitcoin::PrivateKey>)),
+    /// Extended public key, optionally with the corresponding extended private key
     ExtendedKey(
         (
             DescriptorXKey<ExtendedPubKey>,
@@ -176,16 +184,16 @@ impl FromStr for DescriptorKeyWithSecrets {
                 .map_err(|_| DescriptorKeyParseError("Error while parsing simple public key"))?;
             Ok(DescriptorKeyWithSecrets::SingleKey((pk, None)))
         } else {
-            let (key_deriv, source) = DescriptorXKey::<ExtendedPrivKey>::parse_xpub_source(s)?;
+            let (key_deriv, source) = DescriptorXKey::<ExtendedPrivKey>::parse_xkey_source(s)?;
 
             let (xpub, option_xprv) =
                 if key_deriv.starts_with("xprv") || key_deriv.starts_with("tprv") {
                     let (xprv, derivation_path, is_wildcard) =
-                        DescriptorXKey::<ExtendedPrivKey>::parse_xpub_deriv(key_deriv)?;
+                        DescriptorXKey::<ExtendedPrivKey>::parse_xkey_deriv(key_deriv)?;
 
                     let xprv = DescriptorXKey {
                         source,
-                        xpub: xprv,
+                        xkey: xprv,
                         derivation_path,
                         is_wildcard,
                     };
@@ -193,12 +201,12 @@ impl FromStr for DescriptorKeyWithSecrets {
                     (xprv.as_public()?, Some(xprv))
                 } else {
                     let (xpub, derivation_path, is_wildcard) =
-                        DescriptorXKey::<ExtendedPubKey>::parse_xpub_deriv(key_deriv)?;
+                        DescriptorXKey::<ExtendedPubKey>::parse_xkey_deriv(key_deriv)?;
 
                     (
                         DescriptorXKey {
                             source,
-                            xpub,
+                            xkey: xpub,
                             derivation_path,
                             is_wildcard,
                         },
@@ -219,7 +227,7 @@ impl<K: Display> Display for DescriptorXKey<K> {
             fmt_derivation_path(f, master_deriv)?;
             f.write_char(']')?;
         }
-        self.xpub.fmt(f)?;
+        self.xkey.fmt(f)?;
         fmt_derivation_path(f, &self.derivation_path)?;
         if self.is_wildcard {
             write!(f, "/*")?;
@@ -235,7 +243,7 @@ impl MiniscriptKey for DescriptorKeyWithSecrets {
         match self {
             DescriptorKeyWithSecrets::ExtendedKey((xpub, _)) => {
                 let ctx = Secp256k1::verification_only();
-                xpub.xpub
+                xpub.xkey
                     .derive_pub(&ctx, &xpub.derivation_path)
                     .expect("Shouldn't fail, only normal derivations")
                     .public_key
@@ -249,7 +257,7 @@ impl MiniscriptKey for DescriptorKeyWithSecrets {
 #[derive(Debug, Eq, PartialEq, Clone, Ord, PartialOrd, Hash)]
 pub struct DescriptorXKey<K: Display> {
     pub source: Option<(Fingerprint, DerivationPath)>,
-    pub xpub: K,
+    pub xkey: K,
     pub derivation_path: DerivationPath,
     pub is_wildcard: bool,
 }
@@ -271,7 +279,7 @@ impl DescriptorXKey<ExtendedPrivKey> {
             .collect::<DerivationPath>();
 
         let derived_xprv = self
-            .xpub
+            .xkey
             .derive_priv(&secp, &deriv_on_hardened)
             .map_err(|_| DescriptorKeyParseError("Unable to derive the hardened steps"))?;
         let xpub = ExtendedPubKey::from_private(&Secp256k1::new(), &derived_xprv);
@@ -286,7 +294,7 @@ impl DescriptorXKey<ExtendedPrivKey> {
                         .cloned()
                         .collect(),
                 )),
-                None => Some((self.xpub.fingerprint(&secp), deriv_on_hardened)),
+                None => Some((self.xkey.fingerprint(&secp), deriv_on_hardened)),
             }
         } else {
             self.source.clone()
@@ -294,7 +302,7 @@ impl DescriptorXKey<ExtendedPrivKey> {
 
         Ok(DescriptorXKey {
             source,
-            xpub,
+            xkey: xpub,
             derivation_path,
             is_wildcard: self.is_wildcard,
         })
@@ -329,14 +337,14 @@ impl FromStr for DescriptorKey {
                 "Key too short (<66 char), doesn't match any format",
             ))
         } else if let (key_deriv, Some(source)) =
-            DescriptorXKey::<ExtendedPubKey>::parse_xpub_source(s)?
+            DescriptorXKey::<ExtendedPubKey>::parse_xkey_source(s)?
         {
             let (xpub, derivation_path, is_wildcard) =
-                DescriptorXKey::<ExtendedPubKey>::parse_xpub_deriv(key_deriv)?;
+                DescriptorXKey::<ExtendedPubKey>::parse_xkey_deriv(key_deriv)?;
 
             Ok(DescriptorKey::XPub(DescriptorXKey {
                 source: Some(source),
-                xpub,
+                xkey: xpub,
                 derivation_path,
                 is_wildcard,
             }))
@@ -346,10 +354,10 @@ impl FromStr for DescriptorKey {
             Ok(DescriptorKey::PubKey(pk))
         } else {
             let (xpub, derivation_path, is_wildcard) =
-                DescriptorXKey::<ExtendedPubKey>::parse_xpub_deriv(s)?;
+                DescriptorXKey::<ExtendedPubKey>::parse_xkey_deriv(s)?;
             Ok(DescriptorKey::XPub(DescriptorXKey {
                 source: None,
-                xpub,
+                xkey: xpub,
                 derivation_path,
                 is_wildcard,
             }))
@@ -358,7 +366,7 @@ impl FromStr for DescriptorKey {
 }
 
 impl<K: Display + str::FromStr> DescriptorXKey<K> {
-    fn parse_xpub_source(
+    fn parse_xkey_source(
         s: &str,
     ) -> Result<(&str, Option<(Fingerprint, DerivationPath)>), DescriptorKeyParseError> {
         if s.chars().next().unwrap() == '[' {
@@ -399,7 +407,7 @@ impl<K: Display + str::FromStr> DescriptorXKey<K> {
         }
     }
 
-    fn parse_xpub_deriv(
+    fn parse_xkey_deriv(
         key_deriv: &str,
     ) -> Result<(K, DerivationPath, bool), DescriptorKeyParseError> {
         let mut key_deriv = key_deriv.split('/');
@@ -445,7 +453,7 @@ impl DescriptorKey {
                 if xpub.is_wildcard {
                     DescriptorKey::XPub(DescriptorXKey {
                         source: xpub.source.clone(),
-                        xpub: xpub.xpub.clone(),
+                        xkey: xpub.xkey.clone(),
                         derivation_path: (&xpub.derivation_path)
                             .into_iter()
                             .chain(path.iter())
@@ -469,7 +477,7 @@ impl MiniscriptKey for DescriptorKey {
             DescriptorKey::PubKey(pk) => pk.to_pubkeyhash(),
             DescriptorKey::XPub(xpub) => {
                 let ctx = Secp256k1::verification_only();
-                xpub.xpub
+                xpub.xkey
                     .derive_pub(&ctx, &xpub.derivation_path)
                     .expect("Shouldn't fail, only normal derivations")
                     .public_key
@@ -493,7 +501,7 @@ impl SplitSecret for DescriptorKeyWithSecrets {
                 DescriptorKey::XPub(xpub.clone()),
                 option_xprv.as_ref().map(|xprv| {
                     (
-                        SignerId::Fingerprint(xprv.xpub.fingerprint(&Secp256k1::new())),
+                        SignerId::Fingerprint(xprv.xkey.fingerprint(&Secp256k1::new())),
                         Box::new(xprv.clone()) as Box<dyn Signer>,
                     )
                 }),
@@ -517,7 +525,7 @@ impl ToPublicKey for DescriptorKey {
             DescriptorKey::PubKey(pk) => *pk,
             DescriptorKey::XPub(xpub) => {
                 let ctx = Secp256k1::verification_only();
-                xpub.xpub
+                xpub.xkey
                     .derive_pub(&ctx, &xpub.derivation_path)
                     .expect("Shouldn't fail, only normal derivations")
                     .public_key
@@ -942,6 +950,39 @@ where
     }
 }
 
+impl<Pk> expression::FromTree for DescriptorWithSigners<Pk>
+where
+    Pk: SplitSecret,
+    <Pk as FromStr>::Err: ToString,
+    <<Pk as MiniscriptKey>::Hash as str::FromStr>::Err: ToString,
+{
+    /// Parse an expression tree into a descriptor and also extracts the signers from
+    /// the secret keys
+    fn from_tree(top: &expression::Tree) -> Result<DescriptorWithSigners<Pk>, Error> {
+        let mut signers = SignersContainer::new();
+
+        let descriptor: Descriptor<Pk> = expression::FromTree::from_tree(top)?;
+        let descriptor = descriptor
+            .translate_pk(
+                &mut |pk: &Pk| {
+                    let (pk, secret) = pk.split_secret();
+                    if let Some((id, signer)) = secret {
+                        signers.add_external(id, signer);
+                    }
+
+                    Result::<_, ()>::Ok(pk)
+                },
+                &mut |pkh: &<Pk as MiniscriptKey>::Hash| Ok(pkh.clone()),
+            )
+            .expect("Translation fn can't fail.");
+
+        Ok(DescriptorWithSigners {
+            descriptor,
+            signers,
+        })
+    }
+}
+
 impl<Pk> FromStr for Descriptor<Pk>
 where
     Pk: MiniscriptKey,
@@ -951,6 +992,26 @@ where
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Descriptor<Pk>, Error> {
+        for ch in s.as_bytes() {
+            if *ch < 20 || *ch > 127 {
+                return Err(Error::Unprintable(*ch));
+            }
+        }
+
+        let top = expression::Tree::from_str(s)?;
+        expression::FromTree::from_tree(&top)
+    }
+}
+
+impl<Pk> FromStr for DescriptorWithSigners<Pk>
+where
+    Pk: SplitSecret,
+    <Pk as FromStr>::Err: ToString,
+    <<Pk as MiniscriptKey>::Hash as str::FromStr>::Err: ToString,
+{
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<DescriptorWithSigners<Pk>, Error> {
         for ch in s.as_bytes() {
             if *ch < 20 || *ch > 127 {
                 return Err(Error::Unprintable(*ch));
