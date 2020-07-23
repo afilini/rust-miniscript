@@ -55,7 +55,7 @@ use bitcoin::hashes::hash160;
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::util::bip32::{
-    ChildNumber, DerivationPath, Error as Bip32Error, ExtendedPrivKey, ExtendedPubKey,
+    ChildNumber, DerivationPath, Error as Bip32Error, ExtendedPrivKey, ExtendedPubKey, Fingerprint,
 };
 use std::fmt::{Display, Write};
 
@@ -82,13 +82,13 @@ pub enum Descriptor<Pk: MiniscriptKey> {
 
 #[derive(Debug, Eq, PartialEq, Clone, Ord, PartialOrd, Hash)]
 pub enum DescriptorKey {
-    PukKey(bitcoin::PublicKey),
+    PubKey(bitcoin::PublicKey),
     XPub(DescriptorXKey<ExtendedPubKey>),
 }
 
 #[derive(Debug, Clone)]
 pub enum DescriptorKeyWithSecrets {
-    // PrivKey(bitcoin::PrivateKey),
+    SingleKey((bitcoin::PublicKey, Option<bitcoin::PrivateKey>)),
     ExtendedKey(
         (
             DescriptorXKey<ExtendedPubKey>,
@@ -110,6 +110,16 @@ impl Ord for DescriptorKeyWithSecrets {
                 DescriptorKeyWithSecrets::ExtendedKey((a, _)),
                 DescriptorKeyWithSecrets::ExtendedKey((b, _)),
             ) => a.cmp(b),
+            (
+                DescriptorKeyWithSecrets::SingleKey((a, _)),
+                DescriptorKeyWithSecrets::SingleKey((b, _)),
+            ) => a.cmp(b),
+            (DescriptorKeyWithSecrets::ExtendedKey(_), DescriptorKeyWithSecrets::SingleKey(_)) => {
+                cmp::Ordering::Less
+            }
+            (DescriptorKeyWithSecrets::SingleKey(_), DescriptorKeyWithSecrets::ExtendedKey(_)) => {
+                cmp::Ordering::Greater
+            }
         }
     }
 }
@@ -121,6 +131,11 @@ impl PartialEq for DescriptorKeyWithSecrets {
                 DescriptorKeyWithSecrets::ExtendedKey((a, _)),
                 DescriptorKeyWithSecrets::ExtendedKey((b, _)),
             ) => a.eq(b),
+            (
+                DescriptorKeyWithSecrets::SingleKey((a, _)),
+                DescriptorKeyWithSecrets::SingleKey((b, _)),
+            ) => a.eq(b),
+            _ => false,
         }
     }
 }
@@ -131,6 +146,7 @@ impl fmt::Display for DescriptorKeyWithSecrets {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             DescriptorKeyWithSecrets::ExtendedKey((xpub, _)) => write!(f, "[SEC] {}", xpub),
+            DescriptorKeyWithSecrets::SingleKey((pubkey, _)) => write!(f, "[SEC] {}", pubkey),
         }
     }
 }
@@ -139,6 +155,7 @@ impl hash::Hash for DescriptorKeyWithSecrets {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         match self {
             DescriptorKeyWithSecrets::ExtendedKey((xpub, _)) => xpub.hash(state),
+            DescriptorKeyWithSecrets::SingleKey((pubkey, _)) => pubkey.hash(state),
         }
     }
 }
@@ -147,27 +164,50 @@ impl FromStr for DescriptorKeyWithSecrets {
     type Err = DescriptorKeyParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // TODO: all the other types and optional metadata
-        let (xprv, derivation_path, is_wildcard) =
-            DescriptorXKey::<ExtendedPrivKey>::parse_xpub_deriv(s)?;
-        // TODO: derive the hardened parts on xprv first
-        let xpub = ExtendedPubKey::from_private(&Secp256k1::new(), &xprv);
+        if s.len() <= 52 {
+            let sk = bitcoin::PrivateKey::from_wif(s)
+                .map_err(|_| DescriptorKeyParseError("Error while parsing a WIF private key"))?;
+            Ok(DescriptorKeyWithSecrets::SingleKey((
+                sk.public_key(&Secp256k1::new()),
+                Some(sk),
+            )))
+        } else if s.starts_with("02") || s.starts_with("03") || s.starts_with("04") {
+            let pk = PublicKey::from_str(s)
+                .map_err(|_| DescriptorKeyParseError("Error while parsing simple public key"))?;
+            Ok(DescriptorKeyWithSecrets::SingleKey((pk, None)))
+        } else {
+            let (key_deriv, source) = DescriptorXKey::<ExtendedPrivKey>::parse_xpub_source(s)?;
 
-        let xprv = DescriptorXKey {
-            source: None,
-            xpub: xprv,
-            derivation_path: derivation_path.clone(),
-            is_wildcard,
-        };
+            let (xpub, option_xprv) =
+                if key_deriv.starts_with("xprv") || key_deriv.starts_with("tprv") {
+                    let (xprv, derivation_path, is_wildcard) =
+                        DescriptorXKey::<ExtendedPrivKey>::parse_xpub_deriv(key_deriv)?;
 
-        let xpub = DescriptorXKey {
-            source: None,
-            xpub,
-            derivation_path,
-            is_wildcard,
-        };
+                    let xprv = DescriptorXKey {
+                        source,
+                        xpub: xprv,
+                        derivation_path,
+                        is_wildcard,
+                    };
 
-        Ok(DescriptorKeyWithSecrets::ExtendedKey((xpub, Some(xprv))))
+                    (xprv.as_public()?, Some(xprv))
+                } else {
+                    let (xpub, derivation_path, is_wildcard) =
+                        DescriptorXKey::<ExtendedPubKey>::parse_xpub_deriv(key_deriv)?;
+
+                    (
+                        DescriptorXKey {
+                            source,
+                            xpub,
+                            derivation_path,
+                            is_wildcard,
+                        },
+                        None,
+                    )
+                };
+
+            Ok(DescriptorKeyWithSecrets::ExtendedKey((xpub, option_xprv)))
+        }
     }
 }
 
@@ -175,9 +215,7 @@ impl<K: Display> Display for DescriptorXKey<K> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if let Some((master_id, ref master_deriv)) = &self.source {
             f.write_char('[')?;
-            for byte in master_id {
-                write!(f, "{:02x}", byte)?;
-            }
+            write!(f, "{}", master_id)?;
             fmt_derivation_path(f, master_deriv)?;
             f.write_char(']')?;
         }
@@ -203,16 +241,64 @@ impl MiniscriptKey for DescriptorKeyWithSecrets {
                     .public_key
                     .to_pubkeyhash()
             }
+            DescriptorKeyWithSecrets::SingleKey((pubkey, _)) => pubkey.to_pubkeyhash(),
         }
     }
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Ord, PartialOrd, Hash)]
 pub struct DescriptorXKey<K: Display> {
-    pub source: Option<([u8; 4], DerivationPath)>,
+    pub source: Option<(Fingerprint, DerivationPath)>,
     pub xpub: K,
     pub derivation_path: DerivationPath,
     pub is_wildcard: bool,
+}
+
+impl DescriptorXKey<ExtendedPrivKey> {
+    fn as_public(&self) -> Result<DescriptorXKey<ExtendedPubKey>, DescriptorKeyParseError> {
+        let secp = Secp256k1::new();
+
+        let derivation_path = (&self.derivation_path)
+            .into_iter()
+            .rev()
+            .take_while(|c| c.is_normal())
+            .cloned()
+            .collect::<DerivationPath>();
+        let deriv_on_hardened = (&self.derivation_path)
+            .into_iter()
+            .take(self.derivation_path.as_ref().len() - derivation_path.as_ref().len())
+            .cloned()
+            .collect::<DerivationPath>();
+
+        let derived_xprv = self
+            .xpub
+            .derive_priv(&secp, &deriv_on_hardened)
+            .map_err(|_| DescriptorKeyParseError("Unable to derive the hardened steps"))?;
+        let xpub = ExtendedPubKey::from_private(&Secp256k1::new(), &derived_xprv);
+
+        let source = if !deriv_on_hardened.as_ref().is_empty() {
+            match &self.source {
+                Some((fingerprint, source_path)) => Some((
+                    *fingerprint,
+                    source_path
+                        .into_iter()
+                        .chain(deriv_on_hardened.into_iter())
+                        .cloned()
+                        .collect(),
+                )),
+                None => Some((self.xpub.fingerprint(&secp), deriv_on_hardened)),
+            }
+        } else {
+            self.source.clone()
+        };
+
+        Ok(DescriptorXKey {
+            source,
+            xpub,
+            derivation_path,
+            is_wildcard: self.is_wildcard,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -221,7 +307,7 @@ pub struct DescriptorKeyParseError(&'static str);
 impl Display for DescriptorKey {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            DescriptorKey::PukKey(pk) => pk.fmt(f),
+            DescriptorKey::PubKey(pk) => pk.fmt(f),
             DescriptorKey::XPub(xpub) => xpub.fmt(f),
         }
     }
@@ -242,7 +328,40 @@ impl FromStr for DescriptorKey {
             Err(DescriptorKeyParseError(
                 "Key too short (<66 char), doesn't match any format",
             ))
-        } else if s.chars().next().unwrap() == '[' {
+        } else if let (key_deriv, Some(source)) =
+            DescriptorXKey::<ExtendedPubKey>::parse_xpub_source(s)?
+        {
+            let (xpub, derivation_path, is_wildcard) =
+                DescriptorXKey::<ExtendedPubKey>::parse_xpub_deriv(key_deriv)?;
+
+            Ok(DescriptorKey::XPub(DescriptorXKey {
+                source: Some(source),
+                xpub,
+                derivation_path,
+                is_wildcard,
+            }))
+        } else if s.starts_with("02") || s.starts_with("03") || s.starts_with("04") {
+            let pk = PublicKey::from_str(s)
+                .map_err(|_| DescriptorKeyParseError("Error while parsing simple public key"))?;
+            Ok(DescriptorKey::PubKey(pk))
+        } else {
+            let (xpub, derivation_path, is_wildcard) =
+                DescriptorXKey::<ExtendedPubKey>::parse_xpub_deriv(s)?;
+            Ok(DescriptorKey::XPub(DescriptorXKey {
+                source: None,
+                xpub,
+                derivation_path,
+                is_wildcard,
+            }))
+        }
+    }
+}
+
+impl<K: Display + str::FromStr> DescriptorXKey<K> {
+    fn parse_xpub_source(
+        s: &str,
+    ) -> Result<(&str, Option<(Fingerprint, DerivationPath)>), DescriptorKeyParseError> {
+        if s.chars().next().unwrap() == '[' {
             let mut parts = s[1..].split(']');
             let mut origin = parts
                 .next()
@@ -259,7 +378,7 @@ impl FromStr for DescriptorKey {
                 ));
             }
 
-            let origin_id: [u8; 4] = FromHex::from_hex(origin_id_hex).map_err(|_| {
+            let origin_id = FromHex::from_hex(origin_id_hex).map_err(|_| {
                 DescriptorKeyParseError("Malformed master fingerprint, expected 8 hex chars")
             })?;
 
@@ -274,33 +393,12 @@ impl FromStr for DescriptorKey {
                 "No key found after origin description",
             ))?;
 
-            let (xpub, derivation_path, is_wildcard) =
-                DescriptorXKey::<ExtendedPubKey>::parse_xpub_deriv(key_deriv)?;
-
-            Ok(DescriptorKey::XPub(DescriptorXKey {
-                source: Some((origin_id, origin_path)),
-                xpub,
-                derivation_path,
-                is_wildcard,
-            }))
-        } else if s.starts_with("02") || s.starts_with("03") || s.starts_with("04") {
-            let pk = PublicKey::from_str(s)
-                .map_err(|_| DescriptorKeyParseError("Error while parsing simple public key"))?;
-            Ok(DescriptorKey::PukKey(pk))
+            Ok((key_deriv, Some((origin_id, origin_path))))
         } else {
-            let (xpub, derivation_path, is_wildcard) =
-                DescriptorXKey::<ExtendedPubKey>::parse_xpub_deriv(s)?;
-            Ok(DescriptorKey::XPub(DescriptorXKey {
-                source: None,
-                xpub,
-                derivation_path,
-                is_wildcard,
-            }))
+            Ok((s, None))
         }
     }
-}
 
-impl<K: Display + str::FromStr> DescriptorXKey<K> {
     fn parse_xpub_deriv(
         key_deriv: &str,
     ) -> Result<(K, DerivationPath, bool), DescriptorKeyParseError> {
@@ -329,13 +427,7 @@ impl<K: Display + str::FromStr> DescriptorXKey<K> {
             })
             .collect::<Result<DerivationPath, _>>()?;
 
-        if (&derivation_path).into_iter().all(|c| c.is_normal()) {
-            Ok((xpub, derivation_path, is_wildcard))
-        } else {
-            Err(DescriptorKeyParseError(
-                "Hardened derivation is currently not supported.",
-            ))
-        }
+        Ok((xpub, derivation_path, is_wildcard))
     }
 }
 
@@ -348,7 +440,7 @@ impl DescriptorKey {
         assert!(path.into_iter().all(|c| c.is_normal()));
 
         match self {
-            DescriptorKey::PukKey(pk) => DescriptorKey::PukKey(*pk),
+            DescriptorKey::PubKey(pk) => DescriptorKey::PubKey(*pk),
             DescriptorKey::XPub(xpub) => {
                 if xpub.is_wildcard {
                     DescriptorKey::XPub(DescriptorXKey {
@@ -374,7 +466,7 @@ impl MiniscriptKey for DescriptorKey {
 
     fn to_pubkeyhash(&self) -> Self::Hash {
         match self {
-            DescriptorKey::PukKey(pk) => pk.to_pubkeyhash(),
+            DescriptorKey::PubKey(pk) => pk.to_pubkeyhash(),
             DescriptorKey::XPub(xpub) => {
                 let ctx = Secp256k1::verification_only();
                 xpub.xpub
@@ -406,6 +498,15 @@ impl SplitSecret for DescriptorKeyWithSecrets {
                     )
                 }),
             ),
+            DescriptorKeyWithSecrets::SingleKey((pubkey, option_sk)) => (
+                DescriptorKey::PubKey(*pubkey),
+                option_sk.as_ref().map(|sk| {
+                    (
+                        SignerId::PkHash(pubkey.to_pubkeyhash()),
+                        Box::new(sk.clone()) as Box<dyn Signer>,
+                    )
+                }),
+            ),
         }
     }
 }
@@ -413,7 +514,7 @@ impl SplitSecret for DescriptorKeyWithSecrets {
 impl ToPublicKey for DescriptorKey {
     fn to_public_key(&self) -> PublicKey {
         match self {
-            DescriptorKey::PukKey(pk) => *pk,
+            DescriptorKey::PubKey(pk) => *pk,
             DescriptorKey::XPub(xpub) => {
                 let ctx = Secp256k1::verification_only();
                 xpub.xpub
@@ -1408,7 +1509,7 @@ mod tests {
         assert_eq!(format!("{}", expected), key);
 
         let key = "03f28773c2d975288bc7d1d205c3748651b075fbc6610e58cddeeddf8f19405aa8";
-        let expected = DescriptorKey::PukKey(
+        let expected = DescriptorKey::PubKey(
             bitcoin::PublicKey::from_str(
                 "03f28773c2d975288bc7d1d205c3748651b075fbc6610e58cddeeddf8f19405aa8",
             )

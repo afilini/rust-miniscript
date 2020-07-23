@@ -21,7 +21,7 @@ pub enum SignerError {
     // ... add some more here
 }
 
-pub trait SplitSecret: Sized + MiniscriptKey {
+pub trait SplitSecret: MiniscriptKey {
     type Public: MiniscriptKey<Hash = <Self as MiniscriptKey>::Hash>;
 
     fn split_secret(
@@ -39,6 +39,12 @@ pub trait Signer {
 // TODO: implement Satisfier for Signers somehow
 
 impl Signer for DescriptorXKey<ExtendedPrivKey> {
+    fn sign(&self, psbt: &PartiallySignedTransaction) -> Result<BitcoinSig, SignerError> {
+        Err(SignerError::UserCanceled)
+    }
+}
+
+impl Signer for bitcoin::PrivateKey {
     fn sign(&self, psbt: &PartiallySignedTransaction) -> Result<BitcoinSig, SignerError> {
         Err(SignerError::UserCanceled)
     }
