@@ -273,6 +273,10 @@ impl DescriptorXKey<ExtendedPrivKey> {
             .rev()
             .take_while(|c| c.is_normal())
             .cloned()
+            .collect::<DerivationPath>()
+            .into_iter()
+            .rev()
+            .cloned()
             .collect::<DerivationPath>();
         let deriv_on_hardened = (&self.derivation_path)
             .into_iter()
@@ -498,7 +502,12 @@ impl SplitSecret for DescriptorKeyWithSecrets {
                 DescriptorKey::XPub(xpub.clone()),
                 option_xprv.as_ref().map(|xprv| {
                     (
-                        SignerId::Fingerprint(xprv.xkey.fingerprint(&Secp256k1::new())),
+                        SignerId::Fingerprint(
+                            xprv.source
+                                .as_ref()
+                                .map(|&(fing, _)| fing)
+                                .unwrap_or(xprv.xkey.fingerprint(&Secp256k1::new())),
+                        ),
                         Box::new(xprv.clone()) as Box<Signer>,
                     )
                 }),
@@ -1064,8 +1073,9 @@ mod tests {
     use bitcoin::hashes::{hash160, sha256};
     use bitcoin::util::bip32::{ChildNumber, DerivationPath, ExtendedPubKey, Fingerprint};
     use bitcoin::{self, secp256k1, PublicKey};
-    use descriptor::{DescriptorKey, DescriptorXKey};
+    use descriptor::{DescriptorKey, DescriptorKeyWithSecrets, DescriptorXKey};
     use miniscript::satisfy::BitcoinSig;
+    use signer::DescriptorWithSigners;
     use std::collections::HashMap;
     use std::str::FromStr;
     use {Descriptor, DummyKey, Miniscript, Satisfier};
@@ -1600,5 +1610,82 @@ pk(03f28773c2d975288bc7d1d205c3748651b075fbc6610e58cddeeddf8f19405aa8))";
         let res_descriptor = Descriptor::Sh(res_policy.compile().unwrap());
 
         assert_eq!(res_descriptor, derived_descriptor);
+    }
+
+    #[test]
+    fn parse_xprv_no_source_deriv_hardened() {
+        let DescriptorWithSigners { descriptor, signers } = DescriptorWithSigners::<DescriptorKeyWithSecrets>::from_str(
+            "wpkh(xprv9s21ZrQH143K2JF8RafpqtKiTbsbaxEeUaMnNHsm5o6wCW3z8ySyH4UxFVSfZ8n7ESu7fgir8imbZKLYVBxFPND1pniTZ81vKfd45EHKX73/44'/0'/0'/0/1/2/*)",
+        )
+        .unwrap();
+
+        assert_eq!(
+            signers.ids(),
+            vec![&Fingerprint::from_str("0c5f9a1e").unwrap().into()]
+        );
+        assert_eq!(descriptor.to_string(), "wpkh([0c5f9a1e/44'/0'/0']xpub6C9744aAKwhjzQjiY8WsKnTHAcomt9FAMAehmdCnGoFku3kS3n9357BEribfYNaSkJzWKMty4pSiQFppF6mpbtqMtStCr8Hd6Vd9a36suWr/0/1/2/*)");
+    }
+
+    #[test]
+    fn parse_xprv_with_source_deriv_hardened() {
+        let DescriptorWithSigners { descriptor, signers } = DescriptorWithSigners::<DescriptorKeyWithSecrets>::from_str(
+            "wpkh([0c5f9a1e/44']xprv9tzRNW1i8X1RKfMNDazFzvNm1xP6cV7w42fbX2ZuTJQkW88NLbKund4yiGs3FQCv95jCTxybS1db9AQp9sduzbh9aJJeezBn1oEDwjygo4y/0'/0'/0/1/2/*)",
+        )
+        .unwrap();
+
+        assert_eq!(
+            signers.ids(),
+            vec![&Fingerprint::from_str("0c5f9a1e").unwrap().into()]
+        );
+        assert_eq!(descriptor.to_string(), "wpkh([0c5f9a1e/44'/0'/0']xpub6C9744aAKwhjzQjiY8WsKnTHAcomt9FAMAehmdCnGoFku3kS3n9357BEribfYNaSkJzWKMty4pSiQFppF6mpbtqMtStCr8Hd6Vd9a36suWr/0/1/2/*)");
+    }
+
+    #[test]
+    fn parse_xprv_no_deriv_hardened() {
+        let DescriptorWithSigners { descriptor, signers } = DescriptorWithSigners::<DescriptorKeyWithSecrets>::from_str(
+            "wpkh([0c5f9a1e/44']xprv9tzRNW1i8X1RKfMNDazFzvNm1xP6cV7w42fbX2ZuTJQkW88NLbKund4yiGs3FQCv95jCTxybS1db9AQp9sduzbh9aJJeezBn1oEDwjygo4y/0/*)",
+        )
+        .unwrap();
+
+        assert_eq!(
+            signers.ids(),
+            vec![&Fingerprint::from_str("0c5f9a1e").unwrap().into()]
+        );
+        assert_eq!(descriptor.to_string(), "wpkh([0c5f9a1e/44']xpub67ymn1YbxtZiY9RqKcXGN4KVZzDb1wqnRFbCKQyX1dwjNvTWt8eALRPTZWoM7TVe15w3j1rZTCTRqnMxUNTuEAG56QkCpoukEbXtP76gm6i/0/*)");
+    }
+
+    #[test]
+    fn parse_xpub_empty_signers() {
+        let DescriptorWithSigners { descriptor, signers } = DescriptorWithSigners::<DescriptorKeyWithSecrets>::from_str(
+            "wpkh([0c5f9a1e/44']xpub67ymn1YbxtZiY9RqKcXGN4KVZzDb1wqnRFbCKQyX1dwjNvTWt8eALRPTZWoM7TVe15w3j1rZTCTRqnMxUNTuEAG56QkCpoukEbXtP76gm6i/0/*)",
+        )
+        .unwrap();
+
+        assert!(signers.ids().is_empty());
+        assert_eq!(descriptor.to_string(), "wpkh([0c5f9a1e/44']xpub67ymn1YbxtZiY9RqKcXGN4KVZzDb1wqnRFbCKQyX1dwjNvTWt8eALRPTZWoM7TVe15w3j1rZTCTRqnMxUNTuEAG56QkCpoukEbXtP76gm6i/0/*)");
+    }
+
+    #[test]
+    fn parse_wif() {
+        let DescriptorWithSigners {
+            descriptor,
+            signers,
+        } = DescriptorWithSigners::<DescriptorKeyWithSecrets>::from_str(
+            "wpkh(L5EZftvrYaSudiozVRzTqLcHLNDoVn7H5HSfM9BAN6tMJX8oTWz6)",
+        )
+        .unwrap();
+
+        assert_eq!(
+            signers.ids(),
+            vec![
+                &hash160::Hash::from_hex("93ce48570b55c42c2af816aeaba06cfee1224fae")
+                    .unwrap()
+                    .into()
+            ]
+        );
+        assert_eq!(
+            descriptor.to_string(),
+            "wpkh(02b4632d08485ff1df2db55b9dafd23347d1c47a457072a1e87be26896549a8737)"
+        );
     }
 }

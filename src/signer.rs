@@ -19,11 +19,12 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use bitcoin::hashes::hash160;
 use bitcoin::util::bip32::{ExtendedPrivKey, Fingerprint};
 use bitcoin::util::psbt;
 use bitcoin::PrivateKey;
 
-use super::descriptor::{Descriptor, DescriptorXKey};
+use super::descriptor::{Descriptor, DescriptorKey, DescriptorXKey};
 use miniscript::satisfy::BitcoinSig;
 use miniscript::{Miniscript, ScriptContext};
 use MiniscriptKey;
@@ -34,6 +35,18 @@ use MiniscriptKey;
 pub enum SignerId<Pk: MiniscriptKey> {
     PkHash(<Pk as MiniscriptKey>::Hash),
     Fingerprint(Fingerprint),
+}
+
+impl From<hash160::Hash> for SignerId<DescriptorKey> {
+    fn from(hash: hash160::Hash) -> SignerId<DescriptorKey> {
+        SignerId::PkHash(hash)
+    }
+}
+
+impl From<Fingerprint> for SignerId<DescriptorKey> {
+    fn from(fing: Fingerprint) -> SignerId<DescriptorKey> {
+        SignerId::Fingerprint(fing)
+    }
 }
 
 /// Signing error
