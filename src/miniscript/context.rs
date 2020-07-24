@@ -13,6 +13,15 @@
 //
 
 use std::fmt;
+
+use bitcoin::blockdata::opcodes;
+use bitcoin::blockdata::script::Builder as ScriptBuilder;
+use bitcoin::hash_types::SigHash;
+use bitcoin::util::bip143;
+use bitcoin::util::psbt;
+use bitcoin::SigHashType;
+
+use signer::SignerError;
 use {Miniscript, MiniscriptKey, Terminal};
 
 /// Error for Script Context
@@ -71,6 +80,11 @@ pub trait ScriptContext:
     fn check_frag_validity<Pk: MiniscriptKey, Ctx: ScriptContext>(
         _frag: &Terminal<Pk, Ctx>,
     ) -> Result<(), ScriptContextError>;
+
+    fn sighash(
+        psbt: &psbt::PartiallySignedTransaction,
+        input_index: usize,
+    ) -> Result<(SigHash, SigHashType), SignerError>;
 }
 
 /// Legacy ScriptContext
@@ -93,6 +107,42 @@ impl ScriptContext for Legacy {
         _frag: &Terminal<Pk, Ctx>,
     ) -> Result<(), ScriptContextError> {
         Ok(())
+    }
+
+    fn sighash(
+        psbt: &psbt::PartiallySignedTransaction,
+        input_index: usize,
+    ) -> Result<(SigHash, SigHashType), SignerError> {
+        if input_index >= psbt.inputs.len() {
+            return Err(SignerError::InputIndexOutOfRange);
+        }
+
+        let psbt_input = &psbt.inputs[input_index];
+        let tx_input = &psbt.global.unsigned_tx.input[input_index];
+
+        let sighash = psbt_input.sighash_type.ok_or(SignerError::MissingSighash)?;
+        let script = match &psbt_input.redeem_script {
+            &Some(ref redeem_script) => redeem_script.clone(),
+            &None => {
+                let non_witness_utxo = psbt_input
+                    .non_witness_utxo
+                    .as_ref()
+                    .ok_or(SignerError::MissingNonWitnessUtxo)?;
+                let prev_out = non_witness_utxo
+                    .output
+                    .get(tx_input.previous_output.vout as usize)
+                    .ok_or(SignerError::InvalidNonWitnessUtxo)?;
+
+                prev_out.script_pubkey.clone()
+            }
+        };
+
+        Ok((
+            psbt.global
+                .unsigned_tx
+                .signature_hash(input_index, &script, sighash.as_u32()),
+            sighash,
+        ))
     }
 }
 
@@ -117,6 +167,52 @@ impl ScriptContext for Segwitv0 {
             _ => Ok(()),
         }
     }
+
+    fn sighash(
+        psbt: &psbt::PartiallySignedTransaction,
+        input_index: usize,
+    ) -> Result<(SigHash, SigHashType), SignerError> {
+        if input_index >= psbt.inputs.len() {
+            return Err(SignerError::InputIndexOutOfRange);
+        }
+
+        let psbt_input = &psbt.inputs[input_index];
+
+        let sighash = psbt_input.sighash_type.ok_or(SignerError::MissingSighash)?;
+
+        let witness_utxo = psbt_input
+            .witness_utxo
+            .as_ref()
+            .ok_or(SignerError::MissingNonWitnessUtxo)?;
+        let value = witness_utxo.value;
+
+        let script = match &psbt_input.witness_script {
+            &Some(ref witness_script) => witness_script.clone(),
+            &None => {
+                if witness_utxo.script_pubkey.is_v0_p2wpkh() {
+                    ScriptBuilder::new()
+                        .push_opcode(opcodes::all::OP_DUP)
+                        .push_opcode(opcodes::all::OP_HASH160)
+                        .push_slice(&witness_utxo.script_pubkey[2..])
+                        .push_opcode(opcodes::all::OP_EQUALVERIFY)
+                        .push_opcode(opcodes::all::OP_CHECKSIG)
+                        .into_script()
+                } else {
+                    return Err(SignerError::MissingWitnessScript);
+                }
+            }
+        };
+
+        Ok((
+            bip143::SigHashCache::new(&psbt.global.unsigned_tx).signature_hash(
+                input_index,
+                &script,
+                value,
+                sighash,
+            ),
+            sighash,
+        ))
+    }
 }
 
 /// Any ScriptContext. None of the checks should ever be invokde from
@@ -133,6 +229,13 @@ impl ScriptContext for Any {
     fn check_frag_validity<Pk: MiniscriptKey, Ctx: ScriptContext>(
         _frag: &Terminal<Pk, Ctx>,
     ) -> Result<(), ScriptContextError> {
+        unreachable!()
+    }
+
+    fn sighash(
+        _psbt: &psbt::PartiallySignedTransaction,
+        _input_index: usize,
+    ) -> Result<(SigHash, SigHashType), SignerError> {
         unreachable!()
     }
 }

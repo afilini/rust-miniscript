@@ -221,7 +221,7 @@ impl FromStr for DescriptorKeyWithSecrets {
     }
 }
 
-impl<K: Display> Display for DescriptorXKey<K> {
+impl<K: InnerDescriptorXKey> Display for DescriptorXKey<K> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         if let &Some((master_id, ref master_deriv)) = &self.source {
             f.write_char('[')?;
@@ -256,12 +256,62 @@ impl MiniscriptKey for DescriptorKeyWithSecrets {
     }
 }
 
+pub trait InnerDescriptorXKey: Display {
+    fn xkey_fingerprint(&self) -> Fingerprint;
+}
+
+impl InnerDescriptorXKey for ExtendedPubKey {
+    fn xkey_fingerprint(&self) -> Fingerprint {
+        self.fingerprint()
+    }
+}
+
+impl InnerDescriptorXKey for ExtendedPrivKey {
+    fn xkey_fingerprint(&self) -> Fingerprint {
+        self.fingerprint(&Secp256k1::signing_only())
+    }
+}
+
 #[derive(Debug, Eq, PartialEq, Clone, Ord, PartialOrd, Hash)]
-pub struct DescriptorXKey<K: Display> {
+pub struct DescriptorXKey<K: InnerDescriptorXKey> {
     pub source: Option<(Fingerprint, DerivationPath)>,
     pub xkey: K,
     pub derivation_path: DerivationPath,
     pub is_wildcard: bool,
+}
+
+impl<K: InnerDescriptorXKey> DescriptorXKey<K> {
+    pub fn matches(
+        &self,
+        fingerprint: Fingerprint,
+        path: &DerivationPath,
+    ) -> Option<DerivationPath> {
+        let (compare_fingerprint, compare_path) = match &self.source {
+            &Some((fingerprint, ref path)) => (
+                fingerprint.clone(),
+                path.into_iter()
+                    .chain(self.derivation_path.into_iter())
+                    .cloned()
+                    .collect(),
+            ),
+            &None => (self.xkey.xkey_fingerprint(), self.derivation_path.clone()),
+        };
+
+        let path_excluding_wildcard = if self.is_wildcard && path.as_ref().len() > 0 {
+            path.into_iter()
+                .take(path.as_ref().len() - 1)
+                .cloned()
+                .collect()
+        } else {
+            path.clone()
+        };
+
+        if compare_fingerprint == fingerprint && compare_path == path_excluding_wildcard {
+            Some(path.clone())
+        } else {
+            None
+        }
+    }
 }
 
 impl DescriptorXKey<ExtendedPrivKey> {
@@ -371,7 +421,7 @@ impl FromStr for DescriptorKey {
     }
 }
 
-impl<K: Display + str::FromStr> DescriptorXKey<K> {
+impl<K: InnerDescriptorXKey + str::FromStr> DescriptorXKey<K> {
     fn parse_xkey_source(
         s: &str,
     ) -> Result<(&str, Option<(Fingerprint, DerivationPath)>), DescriptorKeyParseError> {
