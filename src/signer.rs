@@ -16,9 +16,10 @@
 //!
 //! Defines traits and structus to work with secrets and signers inside the keys
 
+use std::borrow::BorrowMut;
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use bitcoin::hashes::{hash160, Hash};
 use bitcoin::secp256k1::{Message, Secp256k1};
@@ -231,15 +232,32 @@ impl<Pk: MiniscriptKey> SignersContainer<Pk> {
 }
 
 pub struct PSBTSigningContext<'p> {
-    pub psbt: &'p psbt::PartiallySignedTransaction,
-    pub input_index: usize,
-    pub signers: Arc<SignersContainer<DescriptorKey>>,
+    psbt: Mutex<&'p mut psbt::PartiallySignedTransaction>,
+    input_index: usize,
+    signers: Arc<SignersContainer<DescriptorKey>>,
+}
+
+impl<'p> PSBTSigningContext<'p> {
+    pub fn new(
+        psbt: &'p mut psbt::PartiallySignedTransaction,
+        input_index: usize,
+        signers: &Arc<SignersContainer<DescriptorKey>>,
+    ) -> PSBTSigningContext<'p> {
+        PSBTSigningContext {
+            psbt: Mutex::new(psbt),
+            input_index,
+            signers: Arc::clone(signers),
+        }
+    }
 }
 
 impl<'p> Satisfier<DescriptorKey> for PSBTSigningContext<'p> {
     fn lookup_sig(&self, descriptor_key: &DescriptorKey) -> Option<BitcoinSig> {
-        assert!(self.input_index < self.psbt.inputs.len());
-        let psbt_input = &self.psbt.inputs[self.input_index];
+        let mut psbt = self.psbt.lock().unwrap();
+
+        assert!(self.input_index < psbt.inputs.len());
+
+        let psbt_input = &psbt.inputs[self.input_index];
 
         let (pubkey, maybe_signer) = match descriptor_key {
             &DescriptorKey::PubKey(pubkey) => {
@@ -264,12 +282,10 @@ impl<'p> Satisfier<DescriptorKey> for PSBTSigningContext<'p> {
             }
         };
 
-        let mut cloned_psbt = self.psbt.clone();
-
         if let Some(signer) = maybe_signer {
-            signer.sign(&mut cloned_psbt, self.input_index).unwrap(); // TODO: unwrap
+            signer.sign(psbt.borrow_mut(), self.input_index).unwrap(); // TODO: unwrap
         }
 
-        cloned_psbt.inputs[self.input_index].lookup_sig(&pubkey)
+        psbt.inputs[self.input_index].lookup_sig(&pubkey)
     }
 }
