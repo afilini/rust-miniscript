@@ -27,7 +27,7 @@ pub mod compiler;
 pub mod concrete;
 pub mod semantic;
 
-use descriptor::Descriptor;
+use descriptor::{Descriptor, Full};
 use miniscript::{Miniscript, ScriptContext};
 use Terminal;
 
@@ -100,7 +100,7 @@ impl<Pk: MiniscriptKey, Ctx: ScriptContext> Liftable<Pk> for Terminal<Pk, Ctx> {
     }
 }
 
-impl<Pk: MiniscriptKey> Liftable<Pk> for Descriptor<Pk> {
+impl<Pk: MiniscriptKey> Liftable<Pk> for Descriptor<Pk, Full> {
     fn lift(&self) -> Semantic<Pk> {
         match *self {
             Descriptor::Bare(ref d) | Descriptor::Sh(ref d) => d.node.lift(),
@@ -109,6 +109,7 @@ impl<Pk: MiniscriptKey> Liftable<Pk> for Descriptor<Pk> {
             | Descriptor::Pkh(ref p)
             | Descriptor::Wpkh(ref p)
             | Descriptor::ShWpkh(ref p) => Semantic::KeyHash(p.to_pubkeyhash()),
+            Descriptor::Addr(_, _) => panic!("Unsupported"),
         }
     }
 }

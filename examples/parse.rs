@@ -20,10 +20,11 @@ extern crate miniscript;
 use std::str::FromStr;
 
 fn main() {
-    let my_descriptor = miniscript::Descriptor::<bitcoin::PublicKey>::from_str(
-        "wsh(c:pk_k(020202020202020202020202020202020202020202020202020202020202020202))",
-    )
-    .unwrap();
+    let my_descriptor =
+        miniscript::Descriptor::<bitcoin::PublicKey, miniscript::descriptor::Full>::from_str(
+            "wsh(c:pk_k(020202020202020202020202020202020202020202020202020202020202020202))",
+        )
+        .unwrap();
 
     assert_eq!(
         format!("{:x}", my_descriptor.script_pubkey()),

@@ -14,6 +14,7 @@
 
 use bitcoin::hashes::{hash160, ripemd160, sha256, sha256d, Hash};
 use bitcoin::{self, secp256k1};
+use descriptor::Full;
 use fmt;
 use miniscript::context::Any;
 use miniscript::ScriptContext;
@@ -265,7 +266,7 @@ where
     /// it may return satisfied constraints even if these turn out to be
     /// irrelevant to the final (dis)satisfaction of the descriptor.
     pub fn from_descriptor(
-        des: &'desc Descriptor<bitcoin::PublicKey>,
+        des: &'desc Descriptor<bitcoin::PublicKey, Full>,
         stack: Stack<'stack>,
         verify_sig: F,
         age: u32,
@@ -320,6 +321,7 @@ where
                     has_errored: false,
                 }
             }
+            &Descriptor::Addr(_, _) => panic!("Unsupported"),
         }
     }
 }

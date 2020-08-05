@@ -23,7 +23,9 @@
 //! these with BIP32 paths, pay-to-contract instructions, etc.
 //!
 
+use std::convert::TryFrom;
 use std::fmt;
+use std::marker::PhantomData;
 use std::str::{self, FromStr};
 
 use bitcoin::blockdata::{opcodes, script};
@@ -47,9 +49,31 @@ pub use self::satisfied_constraints::SatisfiedConstraint;
 pub use self::satisfied_constraints::SatisfiedConstraints;
 pub use self::satisfied_constraints::Stack;
 
+pub trait ScriptKnowledge: fmt::Debug + Clone + Ord + PartialOrd + Eq + PartialEq
+// + private::Sealed
+{
+    fn supports_addr() -> bool;
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub enum Full {}
+impl ScriptKnowledge for Full {
+    fn supports_addr() -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub enum Limited {}
+impl ScriptKnowledge for Limited {
+    fn supports_addr() -> bool {
+        true
+    }
+}
+
 /// Script descriptor
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Descriptor<Pk: MiniscriptKey> {
+pub enum Descriptor<Pk: MiniscriptKey, K: ScriptKnowledge> {
     /// A raw scriptpubkey (including pay-to-pubkey) under Legacy context
     Bare(Miniscript<Pk, Legacy>),
     /// Pay-to-Pubkey
@@ -66,9 +90,13 @@ pub enum Descriptor<Pk: MiniscriptKey> {
     Wsh(Miniscript<Pk, Segwitv0>),
     /// P2SH-P2WSH with Segwitv0 context
     ShWsh(Miniscript<Pk, Segwitv0>),
+    /// Address
+    Addr(Script, PhantomData<K>),
+    // /// Raw script
+    // Raw(Script),
 }
 
-impl<Pk: MiniscriptKey> Descriptor<Pk> {
+impl<Pk: MiniscriptKey, K: ScriptKnowledge> Descriptor<Pk, K> {
     /// Convert a descriptor using abstract keys to one using specific keys
     /// This will panic if translatefpk returns an uncompressed key when
     /// converting to a Segwit descriptor. To prevent this panic, ensure
@@ -77,7 +105,7 @@ impl<Pk: MiniscriptKey> Descriptor<Pk> {
         &self,
         mut translatefpk: Fpk,
         mut translatefpkh: Fpkh,
-    ) -> Result<Descriptor<Q>, E>
+    ) -> Result<Descriptor<Q, K>, E>
     where
         Fpk: FnMut(&Pk) -> Result<Q, E>,
         Fpkh: FnMut(&Pk::Hash) -> Result<Q::Hash, E>,
@@ -110,11 +138,12 @@ impl<Pk: MiniscriptKey> Descriptor<Pk> {
             Descriptor::ShWsh(ref ms) => Ok(Descriptor::ShWsh(
                 ms.translate_pk(&mut translatefpk, &mut translatefpkh)?,
             )),
+            Descriptor::Addr(ref script, _) => Ok(Descriptor::Addr(script.clone(), PhantomData)),
         }
     }
 }
 
-impl<Pk: MiniscriptKey + ToPublicKey> Descriptor<Pk> {
+impl<Pk: MiniscriptKey + ToPublicKey, K: ScriptKnowledge> Descriptor<Pk, K> {
     /// Computes the Bitcoin address of the descriptor, if one exists
     pub fn address(&self, network: bitcoin::Network) -> Option<bitcoin::Address> {
         match *self {
@@ -136,6 +165,7 @@ impl<Pk: MiniscriptKey + ToPublicKey> Descriptor<Pk> {
             Descriptor::ShWsh(ref miniscript) => {
                 Some(bitcoin::Address::p2shwsh(&miniscript.encode(), network))
             }
+            Descriptor::Addr(ref script, _) => bitcoin::Address::from_script(script, network),
         }
     }
 
@@ -163,9 +193,12 @@ impl<Pk: MiniscriptKey + ToPublicKey> Descriptor<Pk> {
             Descriptor::Sh(ref miniscript) => miniscript.encode().to_p2sh(),
             Descriptor::Wsh(ref miniscript) => miniscript.encode().to_v0_p2wsh(),
             Descriptor::ShWsh(ref miniscript) => miniscript.encode().to_v0_p2wsh().to_p2sh(),
+            Descriptor::Addr(ref script, _) => script.clone(),
         }
     }
+}
 
+impl<Pk: MiniscriptKey + ToPublicKey> Descriptor<Pk, Full> {
     /// Computes the scriptSig that will be in place for an unsigned
     /// input spending an output with this descriptor. For pre-segwit
     /// descriptors, which use the scriptSig for signatures, this
@@ -197,6 +230,7 @@ impl<Pk: MiniscriptKey + ToPublicKey> Descriptor<Pk> {
                     .push_slice(&witness_script.to_v0_p2wsh()[..])
                     .into_script()
             }
+            Descriptor::Addr(_, _) => panic!("Unsupported"),
         }
     }
 
@@ -216,6 +250,7 @@ impl<Pk: MiniscriptKey + ToPublicKey> Descriptor<Pk> {
             }
             Descriptor::Sh(ref d) => d.encode(),
             Descriptor::Wsh(ref d) | Descriptor::ShWsh(ref d) => d.encode(),
+            Descriptor::Addr(_, _) => panic!("Unsupported"),
         }
     }
 
@@ -338,6 +373,7 @@ impl<Pk: MiniscriptKey + ToPublicKey> Descriptor<Pk> {
                 txin.witness = witness;
                 Ok(())
             }
+            Descriptor::Addr(_, _) => panic!("Unsupported"),
         }
     }
 
@@ -390,18 +426,20 @@ impl<Pk: MiniscriptKey + ToPublicKey> Descriptor<Pk> {
                     + varint_len(ms.max_satisfaction_witness_elements())
                     + ms.max_satisfaction_size(2)
             }
+            Descriptor::Addr(_, _) => panic!("Unsupported"),
         }
     }
 }
 
-impl<Pk> expression::FromTree for Descriptor<Pk>
+impl<Pk, K> expression::FromTree for Descriptor<Pk, K>
 where
     Pk: MiniscriptKey,
     <Pk as FromStr>::Err: ToString,
     <<Pk as MiniscriptKey>::Hash as str::FromStr>::Err: ToString,
+    K: ScriptKnowledge,
 {
     /// Parse an expression tree into a descriptor
-    fn from_tree(top: &expression::Tree) -> Result<Descriptor<Pk>, Error> {
+    fn from_tree(top: &expression::Tree) -> Result<Descriptor<Pk, K>, Error> {
         match (top.name, top.args.len() as u32) {
             ("pk", 1) => {
                 expression::terminal(&top.args[0], |pk| Pk::from_str(pk).map(Descriptor::Pk))
@@ -454,6 +492,18 @@ where
                     Ok(Descriptor::Wsh(sub))
                 }
             }
+            ("addr", 1) => {
+                if K::supports_addr() {
+                    expression::terminal(&top.args[0], |addr| {
+                        bitcoin::Address::from_str(addr)
+                            .map(|a| Descriptor::Addr(a.script_pubkey(), PhantomData))
+                    })
+                } else {
+                    Err(Error::Unexpected(
+                        "Unsupported addr() on a \"Full\" Descriptor".into(),
+                    ))
+                }
+            }
             _ => {
                 let sub = Miniscript::from_tree(&top)?;
                 if sub.ty.corr.base != miniscript::types::Base::B {
@@ -466,15 +516,16 @@ where
     }
 }
 
-impl<Pk> FromStr for Descriptor<Pk>
+impl<Pk, K> FromStr for Descriptor<Pk, K>
 where
     Pk: MiniscriptKey,
     <Pk as FromStr>::Err: ToString,
     <<Pk as MiniscriptKey>::Hash as str::FromStr>::Err: ToString,
+    K: ScriptKnowledge,
 {
     type Err = Error;
 
-    fn from_str(s: &str) -> Result<Descriptor<Pk>, Error> {
+    fn from_str(s: &str) -> Result<Descriptor<Pk, K>, Error> {
         for ch in s.as_bytes() {
             if *ch < 20 || *ch > 127 {
                 return Err(Error::Unprintable(*ch));
@@ -486,7 +537,7 @@ where
     }
 }
 
-impl<Pk: MiniscriptKey> fmt::Debug for Descriptor<Pk> {
+impl<Pk: MiniscriptKey, K: ScriptKnowledge> fmt::Debug for Descriptor<Pk, K> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Descriptor::Bare(ref sub) => write!(f, "{:?}", sub),
@@ -497,11 +548,12 @@ impl<Pk: MiniscriptKey> fmt::Debug for Descriptor<Pk> {
             Descriptor::Sh(ref sub) => write!(f, "sh({:?})", sub),
             Descriptor::Wsh(ref sub) => write!(f, "wsh({:?})", sub),
             Descriptor::ShWsh(ref sub) => write!(f, "sh(wsh({:?}))", sub),
+            Descriptor::Addr(ref script, _) => write!(f, "addr({})", script),
         }
     }
 }
 
-impl<Pk: MiniscriptKey> fmt::Display for Descriptor<Pk> {
+impl<Pk: MiniscriptKey, K: ScriptKnowledge> fmt::Display for Descriptor<Pk, K> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Descriptor::Bare(ref sub) => write!(f, "{}", sub),
@@ -512,6 +564,47 @@ impl<Pk: MiniscriptKey> fmt::Display for Descriptor<Pk> {
             Descriptor::Sh(ref sub) => write!(f, "sh({})", sub),
             Descriptor::Wsh(ref sub) => write!(f, "wsh({})", sub),
             Descriptor::ShWsh(ref sub) => write!(f, "sh(wsh({}))", sub),
+            Descriptor::Addr(ref script, _) => write!(
+                f,
+                "addr({})",
+                bitcoin::Address::from_script(script, bitcoin::Network::Bitcoin).unwrap()
+            ), // TODO: network??
+        }
+    }
+}
+
+impl<Pk: MiniscriptKey> TryFrom<Descriptor<Pk, Limited>> for Descriptor<Pk, Full> {
+    type Error = Error;
+
+    fn try_from(value: Descriptor<Pk, Limited>) -> Result<Self, Self::Error> {
+        match value {
+            Descriptor::Bare(ref ms) => Ok(Descriptor::Bare(ms.clone())),
+            Descriptor::Pk(ref pk) => Ok(Descriptor::Pk(pk.clone())),
+            Descriptor::Pkh(ref pk) => Ok(Descriptor::Pk(pk.clone())),
+            Descriptor::Wpkh(ref pk) => Ok(Descriptor::Pk(pk.clone())),
+            Descriptor::ShWpkh(ref pk) => Ok(Descriptor::Pk(pk.clone())),
+            Descriptor::Sh(ref ms) => Ok(Descriptor::Sh(ms.clone())),
+            Descriptor::Wsh(ref ms) => Ok(Descriptor::Wsh(ms.clone())),
+            Descriptor::ShWsh(ref ms) => Ok(Descriptor::ShWsh(ms.clone())),
+            Descriptor::Addr(_, _) => Err(Error::Unexpected(
+                "Can't convert `addr()` to a \"Full\" descriptor".into(),
+            )),
+        }
+    }
+}
+
+impl<Pk: MiniscriptKey> From<Descriptor<Pk, Full>> for Descriptor<Pk, Limited> {
+    fn from(value: Descriptor<Pk, Full>) -> Self {
+        match value {
+            Descriptor::Bare(ref ms) => Descriptor::Bare(ms.clone()),
+            Descriptor::Pk(ref pk) => Descriptor::Pk(pk.clone()),
+            Descriptor::Pkh(ref pk) => Descriptor::Pk(pk.clone()),
+            Descriptor::Wpkh(ref pk) => Descriptor::Pk(pk.clone()),
+            Descriptor::ShWpkh(ref pk) => Descriptor::Pk(pk.clone()),
+            Descriptor::Sh(ref ms) => Descriptor::Sh(ms.clone()),
+            Descriptor::Wsh(ref ms) => Descriptor::Wsh(ms.clone()),
+            Descriptor::ShWsh(ref ms) => Descriptor::ShWsh(ms.clone()),
+            Descriptor::Addr(_, _) => panic!("Unsupported"),
         }
     }
 }
@@ -526,17 +619,18 @@ mod tests {
     use bitcoin::hashes::hex::FromHex;
     use bitcoin::hashes::{hash160, sha256};
     use bitcoin::{self, secp256k1, PublicKey};
+    use descriptor::{Full, Limited};
     use miniscript::satisfy::BitcoinSig;
     use std::collections::HashMap;
     use std::str::FromStr;
     use {Descriptor, DummyKey, Miniscript, Satisfier};
 
-    type StdDescriptor = Descriptor<PublicKey>;
+    type StdDescriptor = Descriptor<PublicKey, Full>;
     const TEST_PK: &'static str =
         "pk(020000000000000000000000000000000000000000000000000000000000000002)";
 
     fn roundtrip_descriptor(s: &str) {
-        let desc = Descriptor::<DummyKey>::from_str(&s).unwrap();
+        let desc = Descriptor::<DummyKey, Full>::from_str(&s).unwrap();
         let output = desc.to_string();
         let normalize_aliases = s.replace("c:pk_k(", "pk(").replace("c:pk_h(", "pkh(");
         assert_eq!(normalize_aliases, output);
@@ -897,7 +991,8 @@ mod tests {
 
     #[test]
     fn after_is_cltv() {
-        let descriptor = Descriptor::<bitcoin::PublicKey>::from_str("wsh(after(1000))").unwrap();
+        let descriptor =
+            Descriptor::<bitcoin::PublicKey, Full>::from_str("wsh(after(1000))").unwrap();
         let script = descriptor.witness_script();
 
         let actual_instructions: Vec<_> = script.iter(false).collect();
@@ -908,7 +1003,8 @@ mod tests {
 
     #[test]
     fn older_is_csv() {
-        let descriptor = Descriptor::<bitcoin::PublicKey>::from_str("wsh(older(1000))").unwrap();
+        let descriptor =
+            Descriptor::<bitcoin::PublicKey, Full>::from_str("wsh(older(1000))").unwrap();
         let script = descriptor.witness_script();
 
         let actual_instructions: Vec<_> = script.iter(false).collect();
@@ -919,7 +1015,7 @@ mod tests {
 
     #[test]
     fn roundtrip_tests() {
-        let descriptor = Descriptor::<bitcoin::PublicKey>::from_str("multi");
+        let descriptor = Descriptor::<bitcoin::PublicKey, Full>::from_str("multi");
         assert_eq!(
             descriptor.unwrap_err().to_string(),
             "unexpected «no arguments given»"
@@ -928,7 +1024,7 @@ mod tests {
 
     #[test]
     fn empty_thresh() {
-        let descriptor = Descriptor::<bitcoin::PublicKey>::from_str("thresh");
+        let descriptor = Descriptor::<bitcoin::PublicKey, Full>::from_str("thresh");
         assert_eq!(
             descriptor.unwrap_err().to_string(),
             "unexpected «no arguments given»"
@@ -950,7 +1046,7 @@ mod tests {
         .unwrap();
         let sig_b = secp256k1::Signature::from_str("3044022075b7b65a7e6cd386132c5883c9db15f9a849a0f32bc680e9986398879a57c276022056d94d12255a4424f51c700ac75122cb354895c9f2f88f0cbb47ba05c9c589ba").unwrap();
 
-        let descriptor = Descriptor::<bitcoin::PublicKey>::from_str(&format!(
+        let descriptor = Descriptor::<bitcoin::PublicKey, Full>::from_str(&format!(
             "wsh(and_v(v:pk({A}),pk({B})))",
             A = a,
             B = b
@@ -988,5 +1084,31 @@ mod tests {
         // The left side of the `and` performs a CHECKSIG against public key `a` so `sig1` needs to be `sig_a` and `sig0` needs to be `sig_b`.
         assert_eq!(sig1, sig_a);
         assert_eq!(sig0, sig_b);
+    }
+
+    #[test]
+    fn test_parse_addr_full() {
+        let descriptor = Descriptor::<bitcoin::PublicKey, Full>::from_str(
+            "addr(bc1qsn57m9drscflq5nl76z6ny52hck5w4x5wqd9yt)",
+        );
+        assert_eq!(
+            descriptor.unwrap_err().to_string(),
+            "unexpected «Unsupported addr() on a \"Full\" Descriptor»"
+        )
+    }
+
+    #[test]
+    fn test_parse_addr_limited() {
+        let descriptor = Descriptor::<bitcoin::PublicKey, Limited>::from_str(
+            "addr(bc1qsn57m9drscflq5nl76z6ny52hck5w4x5wqd9yt)",
+        )
+        .unwrap();
+
+        assert_eq!(
+            descriptor
+                .address(bitcoin::Network::Bitcoin)
+                .map(|a| a.to_string()),
+            Some(String::from("bc1qsn57m9drscflq5nl76z6ny52hck5w4x5wqd9yt"))
+        )
     }
 }

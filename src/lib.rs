@@ -61,6 +61,7 @@
 //! fn main() {
 //!     let desc = miniscript::Descriptor::<
 //!         bitcoin::PublicKey,
+//!         miniscript::descriptor::Full,
 //!     >::from_str("\
 //!         sh(wsh(or_d(\
 //!             c:pk_k(020e0338c96a8870479f2396c373cc7696ba124e8635d41b0ea581112b67817261),\

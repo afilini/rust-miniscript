@@ -9,6 +9,7 @@ use bitcoin::blockdata::script::Instruction;
 use descriptor::satisfied_constraints::Error as IntError;
 use descriptor::satisfied_constraints::{Stack, StackElement};
 use descriptor::Descriptor;
+use descriptor::Full;
 use miniscript::{Legacy, Miniscript, Segwitv0};
 use Error;
 use ToPublicKey;
@@ -56,7 +57,7 @@ fn verify_p2pk<'txin>(
     script_pubkey: &bitcoin::Script,
     script_sig: &'txin bitcoin::Script,
     witness: &[Vec<u8>],
-) -> Result<(Descriptor<bitcoin::PublicKey>, Stack<'txin>), Error> {
+) -> Result<(Descriptor<bitcoin::PublicKey, Full>, Stack<'txin>), Error> {
     let script_pubkey_len = script_pubkey.len();
     let pk_bytes = &script_pubkey.to_bytes();
     if let Ok(pk) = bitcoin::PublicKey::from_slice(&pk_bytes[1..script_pubkey_len - 1]) {
@@ -139,7 +140,7 @@ fn verify_p2pkh<'txin>(
     script_pubkey: &bitcoin::Script,
     script_sig: &'txin bitcoin::Script,
     witness: &[Vec<u8>],
-) -> Result<(Descriptor<bitcoin::PublicKey>, Stack<'txin>), Error> {
+) -> Result<(Descriptor<bitcoin::PublicKey, Full>, Stack<'txin>), Error> {
     let (pk_bytes, stack) = parse_scriptsig_top(script_sig)?;
     if let Ok(pk) = bitcoin::PublicKey::from_slice(&pk_bytes) {
         let addr = bitcoin::Address::p2pkh(&pk.to_public_key(), bitcoin::Network::Bitcoin);
@@ -191,7 +192,7 @@ pub fn from_txin_with_witness_stack<'txin>(
     script_pubkey: &bitcoin::Script,
     script_sig: &'txin bitcoin::Script,
     witness: &'txin [Vec<u8>],
-) -> Result<(Descriptor<bitcoin::PublicKey>, Stack<'txin>), Error> {
+) -> Result<(Descriptor<bitcoin::PublicKey, Full>, Stack<'txin>), Error> {
     if script_pubkey.is_p2pk() {
         verify_p2pk(script_pubkey, script_sig, witness)
     } else if script_pubkey.is_p2pkh() {

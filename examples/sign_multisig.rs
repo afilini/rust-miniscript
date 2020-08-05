@@ -23,7 +23,8 @@ use std::str::FromStr;
 
 fn main() {
     // Avoid repeatedly typing a pretty-common descriptor type
-    type BitcoinDescriptor = miniscript::Descriptor<bitcoin::PublicKey>;
+    type BitcoinDescriptor =
+        miniscript::Descriptor<bitcoin::PublicKey, miniscript::descriptor::Full>;
 
     // Transaction which spends some output
     let mut tx = bitcoin::Transaction {
