@@ -227,7 +227,9 @@ pub fn interpreter_check<C: secp256k1::Verification>(
             interpreter::Interpreter::from_txdata(spk, &script_sig, &witness, cltv, csv)
                 .map_err(|e| Error::InputError(InputError::Interpreter(e), index))?;
 
-        let vfyfn = interpreter.sighash_verify(&secp, &psbt.global.unsigned_tx, index, amt);
+        let vfyfn = interpreter
+            .sighash_verify(&secp, &psbt.global.unsigned_tx, index, amt)
+            .map_err(|e| Error::InputError(InputError::Interpreter(e), index))?;
         if let Some(error) = interpreter.iter(vfyfn).filter_map(Result::err).next() {
             return Err(Error::InputError(InputError::Interpreter(error), index));
         }

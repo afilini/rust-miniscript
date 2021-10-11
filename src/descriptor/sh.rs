@@ -209,10 +209,18 @@ impl<Pk: MiniscriptKey> DescriptorTrait<Pk> for Sh<Pk> {
         Pk: ToPublicKey,
     {
         match self.inner {
-            ShInner::Wsh(ref wsh) => Ok(bitcoin::Address::p2sh(&wsh.script_pubkey(), network)),
-            ShInner::Wpkh(ref wpkh) => Ok(bitcoin::Address::p2sh(&wpkh.script_pubkey(), network)),
-            ShInner::SortedMulti(ref smv) => Ok(bitcoin::Address::p2sh(&smv.encode(), network)),
-            ShInner::Ms(ref ms) => Ok(bitcoin::Address::p2sh(&ms.encode(), network)),
+            ShInner::Wsh(ref wsh) => Ok(bitcoin::Address::p2sh(&wsh.script_pubkey(), network)
+                .expect("Size checked in Miniscript")),
+            ShInner::Wpkh(ref wpkh) => Ok(bitcoin::Address::p2sh(&wpkh.script_pubkey(), network)
+                .expect("Size checked in Miniscript")),
+            ShInner::SortedMulti(ref smv) => {
+                Ok(bitcoin::Address::p2sh(&smv.encode(), network)
+                    .expect("Size checked in Miniscript"))
+            }
+            ShInner::Ms(ref ms) => {
+                Ok(bitcoin::Address::p2sh(&ms.encode(), network)
+                    .expect("Size checked in Miniscript"))
+            }
         }
     }
 
