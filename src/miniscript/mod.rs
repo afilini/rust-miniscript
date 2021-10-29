@@ -28,6 +28,8 @@ use std::marker::PhantomData;
 use std::{fmt, str};
 
 use bitcoin::blockdata::script;
+use bitcoin::hashes::Hash;
+use bitcoin::util::taproot::{self, LeafVersion, TapLeafHash, TAPROOT_LEAF_TAPSCRIPT};
 
 pub use self::context::{BareCtx, Legacy, Segwitv0, Tap};
 
@@ -358,7 +360,13 @@ impl<Pk: MiniscriptKey, Ctx: ScriptContext> Miniscript<Pk, Ctx> {
     where
         Pk: ToPublicKey,
     {
-        match satisfy::Satisfaction::satisfy(&self.node, &satisfier, self.ty.mall.safe).stack {
+        // Only satisfactions for default versions (0xc0) are allowed.
+        let ver = LeafVersion::from_unmasked_u8(TAPROOT_LEAF_TAPSCRIPT);
+        let leaf_hash =
+            TapLeafHash::from_inner(taproot::compute_leaf_hash(&self.encode(), ver).into_inner());
+        match satisfy::Satisfaction::satisfy(&self.node, &satisfier, self.ty.mall.safe, &leaf_hash)
+            .stack
+        {
             satisfy::Witness::Stack(stack) => {
                 Ctx::check_witness::<Pk, Ctx>(&stack)?;
                 Ok(stack)
@@ -378,7 +386,17 @@ impl<Pk: MiniscriptKey, Ctx: ScriptContext> Miniscript<Pk, Ctx> {
     where
         Pk: ToPublicKey,
     {
-        match satisfy::Satisfaction::satisfy_mall(&self.node, &satisfier, self.ty.mall.safe).stack {
+        let ver = LeafVersion::from_unmasked_u8(TAPROOT_LEAF_TAPSCRIPT);
+        let leaf_hash =
+            TapLeafHash::from_inner(taproot::compute_leaf_hash(&self.encode(), ver).into_inner());
+        match satisfy::Satisfaction::satisfy_mall(
+            &self.node,
+            &satisfier,
+            self.ty.mall.safe,
+            &leaf_hash,
+        )
+        .stack
+        {
             satisfy::Witness::Stack(stack) => {
                 Ctx::check_witness::<Pk, Ctx>(&stack)?;
                 Ok(stack)
@@ -449,6 +467,7 @@ serde_string_impl_pk!(Miniscript, "a miniscript", Ctx; ScriptContext);
 #[cfg(test)]
 mod tests {
 
+    use bitcoin::util::taproot::TapLeafHash;
     use miniscript::satisfy::BitcoinSchnorrSig;
     use {Satisfier, ToPublicKey};
 
@@ -1038,7 +1057,11 @@ mod tests {
 
         // a simple satisfier that always outputs the same signature
         impl<Pk: ToPublicKey> Satisfier<Pk> for SimpleSatisfier {
-            fn lookup_schnorr_sig(&self, _pk: &Pk) -> Option<BitcoinSchnorrSig> {
+            fn lookup_tap_leaf_script_sig(
+                &self,
+                _pk: &Pk,
+                _h: &TapLeafHash,
+            ) -> Option<BitcoinSchnorrSig> {
                 Some(BitcoinSchnorrSig {
                     sig: self.0,
                     hash_ty: bitcoin::util::sighash::SigHashType::Default,
