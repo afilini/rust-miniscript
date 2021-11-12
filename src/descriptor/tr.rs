@@ -65,7 +65,7 @@ impl<Pk: MiniscriptKey> TapTree<Pk> {
 
     /// Iterate over all miniscripts
     pub fn iter(&self) -> TapTreeIter<Pk> {
-        TapTreeIter { stack: vec![self] }
+        TapTreeIter { stack: vec![(0, self)] }
     }
 
     // Helper function to translate keys
@@ -262,7 +262,7 @@ pub struct TapTreeIter<'a, Pk: MiniscriptKey>
 where
     Pk: 'a,
 {
-    stack: Vec<&'a TapTree<Pk>>,
+    stack: Vec<(usize, &'a TapTree<Pk>)>,
 }
 
 impl<'a, Pk> Iterator for TapTreeIter<'a, Pk>
@@ -273,13 +273,13 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         while !self.stack.is_empty() {
-            let last = self.stack.pop().expect("Size checked above");
+            let (depth, last) = self.stack.pop().expect("Size checked above");
             match &*last {
                 TapTree::Tree(l, r) => {
-                    self.stack.push(&r);
-                    self.stack.push(&l);
+                    self.stack.push((depth + 1, &r));
+                    self.stack.push((depth + 1, &l));
                 }
-                TapTree::Leaf(ref ms) => return Some((self.stack.len(), ms)),
+                TapTree::Leaf(ref ms) => return Some((depth, ms)),
             }
         }
         None
