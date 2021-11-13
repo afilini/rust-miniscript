@@ -25,13 +25,14 @@ use bitcoin;
 use bitcoin::hashes::{hash160, ripemd160, sha256, sha256d};
 use bitcoin::secp256k1::{self, Secp256k1};
 use bitcoin::util::psbt::PartiallySignedTransaction as Psbt;
+use bitcoin::util::taproot::TapLeafHash;
 use bitcoin::Script;
 
 use interpreter;
 use miniscript::limits::SEQUENCE_LOCKTIME_DISABLE_FLAG;
 use miniscript::satisfy::{After, Older};
 use Satisfier;
-use {BitcoinECSig, Preimage32};
+use {BitcoinECSig, BitcoinSchnorrSig, Preimage32};
 use {MiniscriptKey, ToPublicKey};
 
 mod finalizer;
@@ -231,6 +232,24 @@ impl<'psbt> PsbtInputSatisfier<'psbt> {
 }
 
 impl<'psbt, Pk: MiniscriptKey + ToPublicKey> Satisfier<Pk> for PsbtInputSatisfier<'psbt> {
+    fn lookup_tap_key_spend_sig(&self) -> Option<BitcoinSchnorrSig> {
+        if let Some((sig, hash_ty)) = self.psbt.inputs[self.index].tap_key_sig {
+            Some(BitcoinSchnorrSig { sig, hash_ty })
+        } else {
+            None
+        }
+    }
+
+    fn lookup_tap_leaf_script_sig(&self, pk: &Pk, lh: &TapLeafHash) -> Option<BitcoinSchnorrSig> {
+        let pk = pk.to_x_only_pubkey();
+
+        if let Some((sig, hash_ty)) = self.psbt.inputs[self.index].tap_script_sigs.get(&(pk, *lh)) {
+            Some(BitcoinSchnorrSig { sig: *sig, hash_ty: *hash_ty })
+        } else {
+            None
+        }
+    }
+
     fn lookup_ec_sig(&self, pk: &Pk) -> Option<BitcoinECSig> {
         if let Some(rawsig) = self.psbt.inputs[self.index]
             .partial_sigs
