@@ -283,9 +283,9 @@ impl FromStr for DescriptorPublicKey {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // A "raw" public key without any origin is the least we accept.
-        if s.len() < 66 {
+        if s.len() < 64 {
             return Err(DescriptorKeyParseError(
-                "Key too short (<66 char), doesn't match any format",
+                "Key too short (<64 char), doesn't match any format",
             ));
         }
 
@@ -300,6 +300,14 @@ impl FromStr for DescriptorPublicKey {
                 xkey: xpub,
                 derivation_path,
                 wildcard,
+            }))
+        } else if key_part.len() == 64 {
+            // x-only pubkey, prefix it with `02`
+            let key = bitcoin::PublicKey::from_str(&format!("02{}", key_part))
+                .map_err(|_| DescriptorKeyParseError("Error while parsing x-only public key"))?;
+            Ok(DescriptorPublicKey::SinglePub(DescriptorSinglePub {
+                key,
+                origin,
             }))
         } else {
             if key_part.len() >= 2
