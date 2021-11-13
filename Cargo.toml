@@ -17,7 +17,7 @@ rand = ["bitcoin/rand"]
 
 [dependencies]
 # bitcoin = "0.27"
-bitcoin = {git = "https://github.com/sanket1729/rust-bitcoin", branch = "taproot_psbt"}
+bitcoin = { git = "https://github.com/afilini/rust-bitcoin.git", branch = "taproot-testing" }
 
 [dependencies.serde]
 version = "1.0"
