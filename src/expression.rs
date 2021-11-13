@@ -100,7 +100,12 @@ impl<'a> Tree<'a> {
 
                 sl = &sl[n + 1..];
                 loop {
-                    let (arg, new_sl) = Tree::from_slice_helper_round(sl, depth + 1)?;
+                    let (arg, new_sl) = if sl.contains('{') {
+                        Tree::from_slice_helper_curly(sl, depth + 1)?
+                    } else {
+                        Tree::from_slice_helper_round(sl, depth + 1)?
+                    };
+
                     ret.args.push(arg);
 
                     if new_sl.is_empty() {
