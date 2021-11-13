@@ -1264,7 +1264,7 @@ impl Satisfaction {
                 // Collect all available signatures
                 let mut sig_count = 0;
                 let mut sigs = vec![vec![vec![]]; keys.len()];
-                for (i, pk) in keys.iter().enumerate() {
+                for (i, pk) in keys.iter().rev().enumerate() {
                     match Witness::signature::<_, _, Ctx>(stfr, pk, leaf_hash) {
                         Witness::Stack(sig) => {
                             sigs[i] = sig;
