@@ -571,17 +571,14 @@ impl<Pk: MiniscriptKey> DescriptorTrait<Pk> for Tr<Pk> {
                 } else {
                     let ver = LeafVersion::default();
                     let leaf_script = (ms.encode(), ver);
-                    let control_block_set = spend_info
-                        .as_script_map()
-                        .get(&leaf_script)
-                        .expect("Control block must exist in script map for every known leaf");
+                    // let control_block_set = spend_info
+                    //     .as_script_map()
+                    //     .get(&leaf_script)
+                    //     .expect("Control block must exist in script map for every known leaf");
+                    let control_block = spend_info.control_block(&leaf_script).expect("Control block must exist in script map for every known leaf");
                     wit.push(leaf_script.0.into_bytes()); // Push the leaf script
                                                           // There can be multiple control blocks for a (script, ver) pair
                                                           // Find the smallest one amongst those
-                    let control_block = control_block_set
-                        .iter()
-                        .min_by(|x, y| x.as_inner().len().cmp(&y.as_inner().len()))
-                        .expect("Atleast one control must exist for a known leaf");
                     wit.push(control_block.serialize());
                     // Finally, save the minimum
                     min_wit = Some(wit);
