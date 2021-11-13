@@ -593,7 +593,7 @@ impl<Pk: MiniscriptKey> DescriptorTrait<Pk> for Tr<Pk> {
     }
 
     fn max_satisfaction_weight(&self) -> Result<usize, Error> {
-        let mut max_wieght = None;
+        let mut max_wieght = Some(65);
         for (depth, ms) in self.iter_scripts() {
             let script_size = ms.script_size();
             let max_sat_elems = match ms.max_satisfaction_witness_elements() {
