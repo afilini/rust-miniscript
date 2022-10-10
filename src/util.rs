@@ -10,8 +10,8 @@ pub(crate) fn varint_len(n: usize) -> usize {
 }
 
 // Helper function to calculate witness size
-pub(crate) fn witness_size(wit: &[Vec<u8>]) -> usize {
-    wit.iter().map(Vec::len).sum::<usize>() + varint_len(wit.len())
+pub(crate) fn witness_size<Pk: MiniscriptKey>(wit: &[WitnessItem<Pk>]) -> usize {
+    wit.iter().map(WitnessItem::len).sum::<usize>() + varint_len(wit.len())
 }
 
 pub(crate) fn witness_to_scriptsig(witness: &[Vec<u8>]) -> Script {

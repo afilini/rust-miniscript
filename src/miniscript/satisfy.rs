@@ -500,11 +500,42 @@ impl_tuple_satisfier!(A, B, C, D, E, F);
 impl_tuple_satisfier!(A, B, C, D, E, F, G);
 impl_tuple_satisfier!(A, B, C, D, E, F, G, H);
 
+pub enum WitnessItem<Pk: MiniscriptKey> {
+    /// Public key and size
+    Pubkey(Pk, usize),
+    EcdsaSig(Pk),
+    ShnorrSig(Pk),
+    Sha256Preimage(Pk::Sha256, usize),
+    Hash256Preimage(Pk::Hash256, usize),
+    Ripemd160Preimage(Pk::Ripemd160, usize),
+    Hash160Preimage(Pk::Hash160, usize),
+    Num(usize),
+    PushOne,
+    PushZero,
+}
+
+impl<Pk: MiniscriptKey> WitnessItem<Pk> {
+    fn len(&self) -> usize {
+        match self {
+            WitnessItem::Pubkey(pk) => Ctx::pk_len(pk),
+            WitnessItem::EcdsaSig(_) => 73,
+            WitnessItem::SchnorrSig(_) => 66,
+            WitnessItem::Sha256Preimage(_, size) => *size,
+            WitnessItem::Hash256Preimage(_, size) => *size,
+            WitnessItem::Ripemd160Preimage(_, size) => *size,
+            WitnessItem::Hash160Preimage(_, size) => *size,
+            WitnessItem::Num(value) => varint_len(value),
+            WitnessItem::PushOne => 1,
+            WitnessItem::PushZero => 0,
+        }
+    }
+}
+
 /// A witness, if available, for a Miniscript fragment
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum Witness {
+pub enum Witness<Pk: MiniscriptKey> {
     /// Witness Available and the value of the witness
-    Stack(Vec<Vec<u8>>),
+    Stack(Vec<WitnessItem<Pk>>),
     /// Third party can possibly satisfy the fragment but we cannot
     /// Witness Unavailable
     Unavailable,
@@ -513,13 +544,13 @@ pub enum Witness {
     Impossible,
 }
 
-impl PartialOrd for Witness {
+impl<Pk: MiniscriptKey> PartialOrd for Witness<Pk> {
     fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Witness {
+impl<Pk: MiniscriptKey> Ord for Witness<Pk> {
     fn cmp(&self, other: &Self) -> cmp::Ordering {
         match (self, other) {
             (&Witness::Stack(ref v1), &Witness::Stack(ref v2)) => {
@@ -537,16 +568,16 @@ impl Ord for Witness {
     }
 }
 
-impl Witness {
+impl<Pk: MiniscriptKey> Witness<Pk> {
     /// Turn a signature into (part of) a satisfaction
-    fn signature<Pk: ToPublicKey, S: Satisfier<Pk>, Ctx: ScriptContext>(
+    fn signature<S: Satisfier<Pk>, Ctx: ScriptContext>(
         sat: S,
         pk: &Pk,
         leaf_hash: &TapLeafHash,
     ) -> Self {
         match Ctx::sig_type() {
             super::context::SigType::Ecdsa => match sat.lookup_ecdsa_sig(pk) {
-                Some(sig) => Witness::Stack(vec![sig.to_vec()]),
+                Some(sig) => Witness::Stack(vec![WitnessItem::EcdsaSig(pk.clone())]),
                 // Signatures cannot be forged
                 None => Witness::Impossible,
             },
@@ -560,9 +591,9 @@ impl Witness {
     }
 
     /// Turn a public key related to a pkh into (part of) a satisfaction
-    fn pkh_public_key<Pk: ToPublicKey, S: Satisfier<Pk>>(sat: S, pkh: &hash160::Hash) -> Self {
+    fn pkh_public_key<S: Satisfier<Pk>>(sat: S, pkh: &hash160::Hash) -> Self {
         match sat.lookup_raw_pkh_pk(pkh) {
-            Some(pk) => Witness::Stack(vec![pk.to_public_key().to_bytes()]),
+            Some(pk) => Witness::Stack(vec![WitnessItem::Pk(pk.clone(), Ctx::pk_len(pk))]),
             // public key hashes are assumed to be unavailable
             // instead of impossible since it is the same as pub-key hashes
             None => Witness::Unavailable,
@@ -1388,7 +1419,7 @@ impl Satisfaction {
                 has_sig: false,
             },
             Terminal::MultiA(_, ref pks) => Satisfaction {
-                stack: Witness::Stack(vec![vec![]; pks.len()]),
+                stack: Witness::Stack(vec![WitnessItem::PushZero, WitnessItem::Num(pks.len())]),
                 has_sig: false,
             },
         }
