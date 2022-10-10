@@ -16,9 +16,9 @@
 //! witness/script_sig for the input.
 
 use crate::descriptor::Bare;
-use crate::miniscript::Miniscript;
+use crate::miniscript::{hash256, Miniscript};
 use crate::{DefiniteDescriptorKey, Descriptor, ScriptContext, Terminal};
-use bitcoin::hashes::sha256;
+use bitcoin::hashes::{hash160, ripemd160, sha256};
 use bitcoin::util::bip32::KeySource;
 use bitcoin::{LockTime, Sequence};
 use std::cmp::Ordering;
@@ -29,6 +29,19 @@ pub struct Plan {}
 pub struct Assets {
     keys: HashSet<DefiniteDescriptorKey>, // poi lo mettiamo generico con CanDerive per le DescPubKey
     sha256_preimages: HashSet<sha256::Hash>,
+    hash256_preimages: HashSet<hash256::Hash>,
+    ripemd160_preimages: HashSet<ripemd160::Hash>,
+    hash160_preimages: HashSet<hash160::Hash>,
+    absolute_timelock: Timelock<LockTime>, // restrizioni
+    relative_timelock: Timelock<Sequence>, // restrizioni
+}
+
+pub struct AssetsRef<'a> {
+    keys: HashSet<DefiniteDescriptorKey>, // poi lo mettiamo generico con CanDerive per le DescPubKey
+    sha256_preimages: HashSet<sha256::Hash>,
+    hash256_preimages: HashSet<hash256::Hash>,
+    ripemd160_preimages: HashSet<ripemd160::Hash>,
+    hash160_preimages: HashSet<hash160::Hash>,
     absolute_timelock: Timelock<LockTime>, // restrizioni
     relative_timelock: Timelock<Sequence>, // restrizioni
 }
@@ -74,20 +87,20 @@ impl<T: PartialOrd + Clone> Timelock<T> {
         Ok(())
     }
 
-    fn get_plannable(&self, to_compare: T) -> Plannable {
+    fn get_solution(&self, to_compare: T) -> Solution {
         let Timelock { at_least, at_most } = &self;
 
         match at_most {
             Some(m) if !m.partial_cmp(&to_compare).is_none() || to_compare > *m => {
-                return Plannable::Impossible;
+                return Solution::Impossible;
             }
             _ => {}
         }
 
         match at_least {
-            Some(l) if !l.partial_cmp(&to_compare).is_none() => Plannable::Impossible,
-            Some(l) if to_compare < *l => Plannable::new_optimal_only(0),
-            _ => Plannable::new_with_timelock(0),
+            Some(l) if !l.partial_cmp(&to_compare).is_none() => Solution::Impossible,
+            Some(l) if to_compare < *l => Solution::new_optimal_only(0),
+            _ => Solution::new_with_timelock(0),
         }
     }
 }
@@ -116,7 +129,7 @@ impl Bare<DefiniteDescriptorKey> {
 
 impl<Ctx: ScriptContext> Miniscript<DefiniteDescriptorKey, Ctx> {
     fn plan(&self, assets: &Assets) -> Result<Plan, ()> {
-        let plannable = plan_helper(&self.node, assets);
+        let solution = plan_helper(&self.node, assets);
         todo!()
     }
 }
@@ -124,26 +137,43 @@ impl<Ctx: ScriptContext> Miniscript<DefiniteDescriptorKey, Ctx> {
 fn plan_helper<Ctx: ScriptContext>(
     node: &Terminal<DefiniteDescriptorKey, Ctx>,
     assets: &Assets,
-) -> Plannable {
+) -> Solution {
     match node {
-        Terminal::True => Plannable::new_optimal_only(1),
-        Terminal::False => Plannable::new_optimal_only(1),
+        Terminal::True => Solution::new_optimal_only(1),
+        Terminal::False => Solution::new_optimal_only(1),
         Terminal::PkH(pk) | Terminal::PkK(pk) | Terminal::RawPkH(pk) => {
-            if assets.has_key(pk) {
-                Plannable::new_optimal_only(Ctx::pk_len(pk))
-            } else {
-                Plannable::Impossible
-            }
+            Solution::new_pk::<Ctx>(pk, assets)
         }
         // absolute
-        Terminal::After(t) => assets.absolute_timelock.get_plannable(t.into()),
+        Terminal::After(t) => assets.absolute_timelock.get_solution(t.into()),
         // relative
-        Terminal::Older(t) => assets.relative_timelock.get_plannable(*t),
+        Terminal::Older(t) => assets.relative_timelock.get_solution(*t),
         Terminal::Sha256(h) => {
             if assets.sha256_preimages.contains(h) {
-                Plannable::new_optimal_only(33)
+                Solution::new_optimal_only(33)
             } else {
-                Plannable::Impossible
+                Solution::Impossible
+            }
+        }
+        Terminal::Hash256(h) => {
+            if assets.hash256_preimages.contains(h) {
+                Solution::new_optimal_only(33)
+            } else {
+                Solution::Impossible
+            }
+        }
+        Terminal::Ripemd160(h) => {
+            if assets.ripemd160_preimages.contains(h) {
+                Solution::new_optimal_only(21)
+            } else {
+                Solution::Impossible
+            }
+        }
+        Terminal::Hash160(h) => {
+            if assets.hash160_preimages.contains(h) {
+                Solution::new_optimal_only(21)
+            } else {
+                Solution::Impossible
             }
         }
         Terminal::Alt(ms)
@@ -153,57 +183,80 @@ fn plan_helper<Ctx: ScriptContext>(
         | Terminal::Verify(ms)
         | Terminal::NonZero(ms)
         | Terminal::ZeroNotEqual(ms) => plan_helper(&ms.node, assets),
-        Terminal::AndV(ms1, ms2) | Terminal::AndB(ms1, ms2) => {
-            plan_helper(&ms1.node, assets).merge_and(plan_helper(&ms2.node, assets))
+        Terminal::AndV(ms1, ms2) | Terminal::AndB(ms1, ms2) => Solution::new_and(
+            plan_helper(&ms1.node, assets),
+            plan_helper(&ms2.node, assets),
+        ),
+        Terminal::AndOr(x, y, z) => Solution::new_or(
+            Solution::new_and(plan_helper(&x.node, assets), plan_helper(&y.node, assets)),
+            plan_helper(&z.node, assets),
+        ),
+        Terminal::OrB(a, b) | Terminal::OrD(a, b) | Terminal::OrC(a, b) | Terminal::OrI(a, b) => {
+            Solution::new_or(plan_helper(&a.node, assets), plan_helper(&b.node, assets))
         }
-        _ => todo!(),
+        Terminal::Thresh(thresh, vec) => {
+            let solutions = vec.iter().map(|ms| plan_helper(&ms.node, assets)).collect();
+            Solution::new_thresh(*thresh, solutions)
+        }
+        Terminal::Multi(thresh, keys) | Terminal::MultiA(thresh, keys) => {
+            let solutions = keys
+                .into_iter()
+                .map(|pk| Solution::new_pk::<Ctx>(pk, assets))
+                .collect();
+            Solution::new_thresh(*thresh, solutions)
+        }
     }
 }
 
-struct Solution {
-    weight: usize,
-    items: Assets,
-}
+
 
 #[derive(Debug, Clone)]
-enum Plannable {
+enum Solution {
     Weight {
         // in byte
         optimal: usize,
         with_timelock: Option<usize>,
+        
     },
     Impossible,
 }
 
-impl Plannable {
+impl Solution {
     fn new_optimal_only(optimal: usize) -> Self {
-        Plannable::Weight {
+        Solution::Weight {
             optimal,
             with_timelock: None,
         }
     }
 
     fn new_with_timelock(optimal: usize) -> Self {
-        Plannable::Weight {
+        Solution::Weight {
             optimal,
             with_timelock: Some(optimal),
         }
     }
 
-    fn merge_and(a: Plannable, b: Plannable) -> Self {
+    fn new_pk<Ctx: ScriptContext>(pk: &DefiniteDescriptorKey, assets: &Assets) -> Self {
+        if assets.has_key(pk) {
+            Solution::new_optimal_only(Ctx::pk_len(pk))
+        } else {
+            Solution::Impossible
+        }
+    }
+
+    fn new_and(a: Solution, b: Solution) -> Self {
         match (a, b) {
-            (Plannable::Impossible, _) | (_, Plannable::Impossible) => Plannable::Impossible,
+            (Solution::Impossible, _) | (_, Solution::Impossible) => Solution::Impossible,
             (
-                Plannable::Weight {
+                Solution::Weight {
                     optimal: a_optimal,
                     with_timelock: a_timelock,
                 },
-                Plannable::Weight {
+                Solution::Weight {
                     optimal: b_optimal,
                     with_timelock: b_timelock,
                 },
             ) => {
-                let optimal = a_optimal + b_optimal;
                 let with_timelock = match (a_timelock, b_timelock) {
                     (None, None) => None,
                     (Some(a), None) => Some(a + b_optimal),
@@ -211,65 +264,86 @@ impl Plannable {
                     (Some(a), Some(b)) => Some(std::cmp::min(a + b_optimal, b + a_optimal)),
                 };
 
-                Plannable::Weight {
-                    optimal,
+                Solution::Weight {
+                    optimal: a_optimal + b_optimal,
                     with_timelock,
                 }
             }
         }
     }
-}
 
-fn pick_subset(list: Vec<Plannable>, thresh: usize) -> Plannable {
-    debug_assert!(thresh > 0);
-
-    // Filter out the impossible items in the list, then sort by optimal weight
-    let mut sorted_optimal = list
-        .iter()
-        .enumerate()
-        .filter_map(|(i, p)| match p {
-            Plannable::Impossible => None,
-            Plannable::Weight { optimal, .. } => Some((i, *optimal)),
-        })
-        .collect::<Vec<_>>();
-
-    // If there aren't enough item after excluding the `Impossible`, this is also `Impossible`
-    if sorted_optimal.len() < thresh {
-        return Plannable::Impossible;
+    fn new_or(a: Solution, b: Solution) -> Self {
+        match (a, b) {
+            (
+                Solution::Weight {
+                    optimal: a_optimal,
+                    with_timelock: a_timelock,
+                },
+                Solution::Weight {
+                    optimal: b_optimal,
+                    with_timelock: b_timelock,
+                },
+            ) => Solution::Weight {
+                optimal: std::cmp::min(a_optimal, b_optimal),
+                with_timelock: std::cmp::min(a_timelock, b_timelock),
+            },
+            (Solution::Impossible, Solution::Impossible) => Solution::Impossible,
+            (a, _) => a,
+            (_, b) => b,
+        }
     }
-    sorted_optimal.sort_unstable_by_key(|(_, p)| *p);
 
-    // Try with all the items that can satisfy the timelock requirement
-    let mut with_timelock_list = list
-        .iter()
-        .enumerate()
-        .filter_map(|(i, p)| match p {
-            Plannable::Weight {
-                with_timelock: Some(wt),
-                ..
-            } => {
-                // We take the current element with timelock weight,
-                // then we take the sorted_optimal list, we remove the current element,
-                // and we take the thresh - 1 best optimal weight
-                Some(
-                    wt + sorted_optimal
-                        .iter()
-                        .filter(|(index, _)| *index != i)
-                        .map(|(_, w)| *w)
-                        .take(thresh - 1)
-                        .sum::<usize>(),
-                )
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    fn new_thresh(thresh: usize, list: Vec<Solution>) -> Solution {
+        debug_assert!(thresh > 0);
 
-    // Sort by weight, and the first one is our with_timelock optimal solution
-    with_timelock_list.sort_unstable();
+        // Filter out the impossible items in the list, then sort by optimal weight
+        let mut sorted_optimal = list
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| match p {
+                Solution::Impossible => None,
+                Solution::Weight { optimal, .. } => Some((i, *optimal)),
+            })
+            .collect::<Vec<_>>();
 
-    Plannable::Weight {
-        optimal: sorted_optimal.iter().take(thresh).map(|(_, w)| *w).sum(),
-        with_timelock: with_timelock_list.get(0).cloned(),
+        // If there aren't enough item after excluding the `Impossible`, this is also `Impossible`
+        if sorted_optimal.len() < thresh {
+            return Solution::Impossible;
+        }
+        sorted_optimal.sort_unstable_by_key(|(_, p)| *p);
+
+        // Try with all the items that can satisfy the timelock requirement
+        let mut with_timelock_list = list
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| match p {
+                Solution::Weight {
+                    with_timelock: Some(wt),
+                    ..
+                } => {
+                    // We take the current element with timelock weight,
+                    // then we take the sorted_optimal list, we remove the current element,
+                    // and we take the thresh - 1 best optimal weight
+                    Some(
+                        wt + sorted_optimal
+                            .iter()
+                            .filter(|(index, _)| *index != i)
+                            .map(|(_, w)| *w)
+                            .take(thresh - 1)
+                            .sum::<usize>(),
+                    )
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        // Sort by weight, and the first one is our with_timelock optimal solution
+        with_timelock_list.sort_unstable();
+
+        Solution::Weight {
+            optimal: sorted_optimal.iter().take(thresh).map(|(_, w)| *w).sum(),
+            with_timelock: with_timelock_list.get(0).cloned(),
+        }
     }
 }
 
