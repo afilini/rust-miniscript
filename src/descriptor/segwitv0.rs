@@ -185,7 +185,7 @@ impl Wsh<DefiniteDescriptorKey> {
         P: AssetProvider<DefiniteDescriptorKey>,
     {
         match &self.inner {
-            WshInner::SortedMulti(_sm) => todo!(),
+            WshInner::SortedMulti(sm) => sm.build_template(provider).into_plan(DescriptorType::Wsh),
             WshInner::Ms(ms) => ms.build_template(provider).into_plan(DescriptorType::Wsh),
         }
     }
@@ -196,7 +196,7 @@ impl Wsh<DefiniteDescriptorKey> {
         P: AssetProvider<DefiniteDescriptorKey>,
     {
         match &self.inner {
-            WshInner::SortedMulti(_sm) => todo!(),
+            WshInner::SortedMulti(sm) => sm.build_template(provider).into_plan(DescriptorType::Wsh),
             WshInner::Ms(ms) => ms
                 .build_template_mall(provider)
                 .into_plan(DescriptorType::Wsh),

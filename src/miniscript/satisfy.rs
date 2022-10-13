@@ -558,7 +558,8 @@ impl<Pk: MiniscriptKey + ToPublicKey> Placeholder<Pk> {
                 .or(sat.lookup_raw_pkh_ecdsa_sig(pkh).map(|(p, _)| p))
                 .map(|pk| {
                     let pk = pk.to_bytes();
-                    debug_assert!(pk.len() == *size);
+                    // We have to add a 1-byte OP_PUSH
+                    debug_assert!(1 + pk.len() == *size);
                     pk
                 }),
             Placeholder::Hash256Preimage(h) => sat.lookup_hash256(h).map(|p| p.to_vec()),

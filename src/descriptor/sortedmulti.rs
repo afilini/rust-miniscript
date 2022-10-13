@@ -25,6 +25,8 @@ use bitcoin::blockdata::script;
 use crate::miniscript::context::ScriptContext;
 use crate::miniscript::decode::Terminal;
 use crate::miniscript::limits::MAX_PUBKEYS_PER_MULTISIG;
+use crate::miniscript::satisfy::{Placeholder, Satisfaction};
+use crate::plan::AssetProvider;
 use crate::prelude::*;
 use crate::{
     errstr, expression, miniscript, policy, script_num_size, Error, ForEachKey, Miniscript,
@@ -171,7 +173,14 @@ impl<Pk: MiniscriptKey, Ctx: ScriptContext> SortedMultiVec<Pk, Ctx> {
         ms.satisfy(satisfier)
     }
 
-    // TODO: build_template
+    pub fn build_template<S>(&self, satisfier: &S) -> Satisfaction<Placeholder<Pk>>
+    where
+        Pk: ToPublicKey,
+        S: AssetProvider<Pk>,
+    {
+        let ms = Miniscript::from_ast(self.sorted_node()).expect("Multi node typecheck");
+        ms.build_template(satisfier)
+    }
 
     /// Size, in bytes of the script-pubkey. If this Miniscript is used outside
     /// of segwit (e.g. in a bare or P2SH descriptor), this quantity should be
