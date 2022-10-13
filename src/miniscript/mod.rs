@@ -55,6 +55,7 @@ pub use crate::miniscript::context::ScriptContext;
 use crate::miniscript::decode::Terminal;
 use crate::miniscript::types::extra_props::ExtData;
 use crate::miniscript::types::Type;
+use crate::plan;
 use crate::{expression, Error, ForEachKey, MiniscriptKey, ToPublicKey, TranslatePk, Translator};
 #[cfg(test)]
 mod ms_tests;
@@ -430,28 +431,28 @@ impl<Pk: MiniscriptKey, Ctx: ScriptContext> Miniscript<Pk, Ctx> {
         }
     }
 
-    pub fn build_template<S: satisfy::Satisfier<Pk>>(
+    pub fn build_template<P: plan::AssetProvider<Pk>>(
         &self,
-        satisfier: S,
-    ) -> satisfy::Satisfaction<satisfy::WitnessItem<Pk>>
+        provider: &P,
+    ) -> satisfy::Satisfaction<satisfy::Placeholder<Pk>>
     where
         Pk: ToPublicKey,
     {
         let leaf_hash = TapLeafHash::from_script(&self.encode(), LeafVersion::TapScript);
-        satisfy::Satisfaction::build_template(&self.node, &satisfier, self.ty.mall.safe, &leaf_hash)
+        satisfy::Satisfaction::build_template(&self.node, provider, self.ty.mall.safe, &leaf_hash)
     }
 
-    pub fn build_template_malleable<S: satisfy::Satisfier<Pk>>(
+    pub fn build_template_malleable<P: plan::AssetProvider<Pk>>(
         &self,
-        satisfier: S,
-    ) -> satisfy::Satisfaction<satisfy::WitnessItem<Pk>>
+        provider: &P,
+    ) -> satisfy::Satisfaction<satisfy::Placeholder<Pk>>
     where
         Pk: ToPublicKey,
     {
         let leaf_hash = TapLeafHash::from_script(&self.encode(), LeafVersion::TapScript);
         satisfy::Satisfaction::build_template_mall(
             &self.node,
-            &satisfier,
+            provider,
             self.ty.mall.safe,
             &leaf_hash,
         )
@@ -1114,7 +1115,6 @@ mod tests {
         assert_eq!(tap_ms.encode().len(), tap_ms.script_size());
 
         // Test satisfaction code
-        #[derive(Clone)]
         struct SimpleSatisfier(secp256k1::schnorr::Signature);
 
         // a simple satisfier that always outputs the same signature
@@ -1133,11 +1133,11 @@ mod tests {
 
         let schnorr_sig = secp256k1::schnorr::Signature::from_str("84526253c27c7aef56c7b71a5cd25bebb66dddda437826defc5b2568bde81f0784526253c27c7aef56c7b71a5cd25bebb66dddda437826defc5b2568bde81f07").unwrap();
         let s = SimpleSatisfier(schnorr_sig);
-        let template = tap_ms.build_template(s.clone());
+        let template = tap_ms.build_template(&s);
         assert_eq!(template.absolute_timelock, None);
         assert_eq!(template.relative_timelock, None);
 
-        let wit = tap_ms.satisfy(s).unwrap();
+        let wit = tap_ms.satisfy(&s).unwrap();
         assert_eq!(wit, vec![schnorr_sig.as_ref().to_vec(), vec![], vec![]]);
     }
 
@@ -1238,7 +1238,6 @@ mod tests {
         ];
 
         // Test satisfaction code
-        #[derive(Clone)]
         struct SimpleSatisfier(secp256k1::schnorr::Signature, bitcoin::PublicKey);
 
         // a simple satisfier that always outputs the same signature
@@ -1272,7 +1271,7 @@ mod tests {
 
         for (ms_str, absolute_timelock, relative_timelock) in test_cases {
             let ms = Miniscript::<bitcoin::PublicKey, Tap>::from_str(&ms_str).unwrap();
-            let template = ms.build_template(s.clone());
+            let template = ms.build_template(&s);
             assert!(
                 matches!(
                     template.stack,

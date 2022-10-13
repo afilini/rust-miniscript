@@ -3,30 +3,39 @@ use bitcoin::hashes::Hash;
 use bitcoin::{PubkeyHash, Script};
 
 use crate::miniscript::context;
-use crate::miniscript::satisfy::WitnessItem;
+use crate::miniscript::satisfy::{PartialSatisfaction, Placeholder};
 use crate::prelude::*;
 use crate::{MiniscriptKey, ScriptContext, ToPublicKey};
 pub(crate) fn varint_len(n: usize) -> usize {
     bitcoin::VarInt(n as u64).len()
 }
 
-pub(crate) trait ItemSize {
+pub trait ItemSize {
     fn size(&self) -> usize;
 }
 
-impl<Pk: MiniscriptKey> ItemSize for WitnessItem<Pk> {
+impl<Pk: MiniscriptKey> ItemSize for Placeholder<Pk> {
     fn size(&self) -> usize {
         match self {
-            WitnessItem::Pubkey(_, size) => *size,
-            WitnessItem::EcdsaSigPk(_) | WitnessItem::EcdsaSigHash(_) => 72,
-            WitnessItem::SchnorrSig(_, _) => 65,
-            WitnessItem::HashDissatisfaction
-            | WitnessItem::Sha256Preimage(_)
-            | WitnessItem::Hash256Preimage(_)
-            | WitnessItem::Ripemd160Preimage(_)
-            | WitnessItem::Hash160Preimage(_) => 32,
-            WitnessItem::PushOne => 1,
-            WitnessItem::PushZero => 0,
+            Placeholder::Pubkey(_, size) => *size,
+            Placeholder::EcdsaSigPk(_) | Placeholder::EcdsaSigHash(_) => 72,
+            Placeholder::SchnorrSig(_, _) => 65,
+            Placeholder::HashDissatisfaction
+            | Placeholder::Sha256Preimage(_)
+            | Placeholder::Hash256Preimage(_)
+            | Placeholder::Ripemd160Preimage(_)
+            | Placeholder::Hash160Preimage(_) => 32,
+            Placeholder::PushOne => 1,
+            Placeholder::PushZero => 0,
+        }
+    }
+}
+
+impl<Pk: MiniscriptKey> ItemSize for PartialSatisfaction<Pk> {
+    fn size(&self) -> usize {
+        match self {
+            PartialSatisfaction::Placeholder(p) => p.size(),
+            PartialSatisfaction::Data(d) => d.len(),
         }
     }
 }
