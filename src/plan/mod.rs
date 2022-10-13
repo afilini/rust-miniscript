@@ -46,7 +46,7 @@ pub trait AssetProvider<Pk: MiniscriptKey> {
     }
 
     /// Lookup the tap key spend sig
-    fn lookup_tap_key_spend_sig(&self) -> bool {
+    fn lookup_tap_key_spend_sig(&self, _: &Pk) -> bool {
         false
     }
 
@@ -123,7 +123,7 @@ macro_rules! impl_log_method {
 
 impl AssetProvider<DefiniteDescriptorKey> for LoggerAssetProvider {
     impl_log_method!(lookup_ecdsa_sig, pk: &DefiniteDescriptorKey, -> bool);
-    impl_log_method!(lookup_tap_key_spend_sig, -> bool);
+    impl_log_method!(lookup_tap_key_spend_sig, pk: &DefiniteDescriptorKey, -> bool);
     impl_log_method!(lookup_tap_leaf_script_sig, pk: &DefiniteDescriptorKey, leaf_hash: &TapLeafHash, -> bool);
     impl_log_method!(lookup_raw_pkh_pk, <Ctx: ScriptContext> hash: &hash160::Hash, -> Option<usize>);
     impl_log_method!(lookup_raw_pkh_ecdsa_sig, <Ctx: ScriptContext> hash: &hash160::Hash, -> Option<usize>);
@@ -145,7 +145,7 @@ where
         Satisfier::lookup_ecdsa_sig(self, pk).is_some()
     }
 
-    fn lookup_tap_key_spend_sig(&self) -> bool {
+    fn lookup_tap_key_spend_sig(&self, _: &Pk) -> bool {
         Satisfier::lookup_tap_key_spend_sig(self).is_some()
     }
 
@@ -212,7 +212,7 @@ impl Plan {
             (Some(WitnessVersion::V1), _) => 1,
             // scriptSig len (1) + OP_0 (1) + OP_PUSHBYTES_20 (1) + <pk hash> (20)
             (_, DescriptorType::ShWpkh) => 1 + 1 + 1 + 20,
-            // scriptSig len (1) + OP_0 (1) + OP_PUSHBYTES_32 (1) + <script hash> (20)
+            // scriptSig len (1) + OP_0 (1) + OP_PUSHBYTES_32 (1) + <script hash> (32)
             (_, DescriptorType::ShWsh) | (_, DescriptorType::ShWshSortedMulti) => 1 + 1 + 1 + 32,
             // Native Segwit v0 (scriptSig len (1))
             __ => 1,
@@ -249,7 +249,7 @@ impl AssetProvider<DefiniteDescriptorKey> for Assets {
         self.keys.contains(pk)
     }
 
-    fn lookup_tap_key_spend_sig(&self) -> bool {
+    fn lookup_tap_key_spend_sig(&self, pk: &DefiniteDescriptorKey) -> bool {
         false
     }
 

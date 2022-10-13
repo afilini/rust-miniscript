@@ -28,6 +28,8 @@ impl<Pk: MiniscriptKey> ItemSize for Placeholder<Pk> {
             | Placeholder::Hash160Preimage(_) => 33,
             Placeholder::PushOne => 2, // On legacy this should be 1 ?
             Placeholder::PushZero => 1,
+            Placeholder::TapScript(s) => s.len(),
+            Placeholder::TapControlBlock(cb) => cb.serialize().len(),
         }
     }
 }

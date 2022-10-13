@@ -436,7 +436,7 @@ impl<Pk: MiniscriptKey + ToPublicKey> Descriptor<Pk> {
             Descriptor::Wpkh(ref wpkh) => wpkh.get_satisfaction(satisfier),
             Descriptor::Wsh(ref wsh) => wsh.get_satisfaction(satisfier),
             Descriptor::Sh(ref sh) => sh.get_satisfaction(satisfier),
-            Descriptor::Tr(ref tr) => tr.get_satisfaction(satisfier),
+            Descriptor::Tr(ref tr) => tr.get_satisfaction(&satisfier),
         }
     }
 
@@ -453,7 +453,7 @@ impl<Pk: MiniscriptKey + ToPublicKey> Descriptor<Pk> {
             Descriptor::Wpkh(ref wpkh) => wpkh.get_satisfaction_mall(satisfier),
             Descriptor::Wsh(ref wsh) => wsh.get_satisfaction_mall(satisfier),
             Descriptor::Sh(ref sh) => sh.get_satisfaction_mall(satisfier),
-            Descriptor::Tr(ref tr) => tr.get_satisfaction_mall(satisfier),
+            Descriptor::Tr(ref tr) => tr.get_satisfaction_mall(&satisfier),
         }
     }
 
@@ -479,15 +479,11 @@ impl Descriptor<DefiniteDescriptorKey> {
     {
         match *self {
             Descriptor::Bare(ref bare) => bare.get_plan(provider),
+            Descriptor::Pkh(ref pkh) => pkh.get_plan(provider),
+            Descriptor::Wpkh(ref wpkh) => wpkh.get_plan(provider),
             Descriptor::Wsh(ref wsh) => wsh.get_plan(provider),
-            _ => todo!(),
-            /*
-            Descriptor::Pkh(ref pkh) => pkh.get_satisfaction(satisfier),
-            Descriptor::Wpkh(ref wpkh) => wpkh.get_satisfaction(satisfier),
-            Descriptor::Wsh(ref wsh) => wsh.get_satisfaction(satisfier),
-            Descriptor::Sh(ref sh) => sh.get_satisfaction(satisfier),
-            Descriptor::Tr(ref tr) => tr.get_satisfaction(satisfier),
-            */
+            Descriptor::Sh(ref sh) => sh.get_plan(provider),
+            Descriptor::Tr(ref tr) => tr.get_plan(provider),
         }
     }
 
@@ -498,15 +494,11 @@ impl Descriptor<DefiniteDescriptorKey> {
     {
         match *self {
             Descriptor::Bare(ref bare) => bare.get_plan_mall(provider),
+            Descriptor::Pkh(ref pkh) => pkh.get_plan_mall(provider),
+            Descriptor::Wpkh(ref wpkh) => wpkh.get_plan_mall(provider),
             Descriptor::Wsh(ref wsh) => wsh.get_plan_mall(provider),
-            _ => todo!(),
-            /*
-            Descriptor::Pkh(ref pkh) => pkh.get_satisfaction(satisfier),
-            Descriptor::Wpkh(ref wpkh) => wpkh.get_satisfaction(satisfier),
-            Descriptor::Wsh(ref wsh) => wsh.get_satisfaction(satisfier),
-            Descriptor::Sh(ref sh) => sh.get_satisfaction(satisfier),
-            Descriptor::Tr(ref tr) => tr.get_satisfaction(satisfier),
-            */
+            Descriptor::Sh(ref sh) => sh.get_plan_mall(provider),
+            Descriptor::Tr(ref tr) => tr.get_plan_mall(provider),
         }
     }
 }

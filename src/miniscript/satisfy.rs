@@ -23,7 +23,7 @@ use core::{cmp, i64, mem};
 use bitcoin::hashes::hash160;
 use bitcoin::secp256k1::XOnlyPublicKey;
 use bitcoin::util::taproot::{ControlBlock, LeafVersion, TapLeafHash};
-use bitcoin::{LockTime, PackedLockTime, Sequence};
+use bitcoin::{LockTime, PackedLockTime, Script, Sequence};
 use sync::Arc;
 
 use super::context::SigType;
@@ -516,7 +516,7 @@ pub enum Placeholder<Pk: MiniscriptKey> {
     /// ECDSA signature given the pubkey hash
     EcdsaSigHash(hash160::Hash),
     /// Schnorr signature
-    SchnorrSig(Pk, TapLeafHash),
+    SchnorrSig(Pk, Option<TapLeafHash>),
     /// SHA-256 preimage
     Sha256Preimage(Pk::Sha256),
     /// HASH256 preimage
@@ -531,6 +531,11 @@ pub enum Placeholder<Pk: MiniscriptKey> {
     PushOne,
     /// <empty item>
     PushZero,
+
+    /// Taproot leaf script
+    TapScript(Script),
+    /// Taproot control block
+    TapControlBlock(ControlBlock),
 }
 
 // impl<Pk: MiniscriptKey> fmt::Display for Placeholder<Pk> {
@@ -564,12 +569,15 @@ impl<Pk: MiniscriptKey + ToPublicKey> Placeholder<Pk> {
             Placeholder::EcdsaSigHash(pkh) => {
                 sat.lookup_raw_pkh_ecdsa_sig(pkh).map(|(_, s)| s.to_vec())
             }
-            Placeholder::SchnorrSig(pk, leaf_hash) => sat
+            Placeholder::SchnorrSig(pk, Some(leaf_hash)) => sat
                 .lookup_tap_leaf_script_sig(pk, leaf_hash)
                 .map(|s| s.to_vec()),
+            Placeholder::SchnorrSig(_, _) => sat.lookup_tap_key_spend_sig().map(|s| s.to_vec()),
             Placeholder::HashDissatisfaction => Some(vec![0; 32]),
             Placeholder::PushZero => Some(vec![]),
             Placeholder::PushOne => Some(vec![1]),
+            Placeholder::TapScript(s) => Some(s.to_bytes()),
+            Placeholder::TapControlBlock(cb) => Some(cb.serialize()),
         }
     }
 }
@@ -741,7 +749,10 @@ impl<Pk: MiniscriptKey + ToPublicKey> Witness<Placeholder<Pk>> {
             }
             super::context::SigType::Schnorr => {
                 if sat.lookup_tap_leaf_script_sig(pk, leaf_hash) {
-                    Witness::Stack(vec![Placeholder::SchnorrSig(pk.clone(), leaf_hash.clone())])
+                    Witness::Stack(vec![Placeholder::SchnorrSig(
+                        pk.clone(),
+                        Some(leaf_hash.clone()),
+                    )])
                 } else {
                     // Signatures cannot be forged
                     Witness::Impossible
@@ -867,6 +878,31 @@ pub struct Satisfaction<T> {
     // for us
     pub absolute_timelock: Option<PackedLockTime>,
     pub relative_timelock: Option<Sequence>,
+}
+
+impl<T> Satisfaction<T> {
+    pub fn map_stack<U, F>(self, mapfn: F) -> Satisfaction<U>
+    where
+        F: Fn(Vec<T>) -> Vec<U>,
+    {
+        let Satisfaction {
+            stack,
+            has_sig,
+            relative_timelock,
+            absolute_timelock,
+        } = self;
+        let stack = match stack {
+            Witness::Stack(stack) => Witness::Stack(mapfn(stack)),
+            Witness::Unavailable => Witness::Unavailable,
+            Witness::Impossible => Witness::Impossible,
+        };
+        Satisfaction {
+            stack,
+            has_sig,
+            relative_timelock,
+            absolute_timelock,
+        }
+    }
 }
 
 impl<Pk: MiniscriptKey + ToPublicKey> Satisfaction<Placeholder<Pk>> {
@@ -1830,28 +1866,12 @@ impl Satisfaction<Vec<u8>> {
         Pk: MiniscriptKey + ToPublicKey,
         Sat: Satisfier<Pk>,
     {
-        let Satisfaction {
-            stack,
-            has_sig,
-            absolute_timelock,
-            relative_timelock,
-        } = Satisfaction::<Placeholder<Pk>>::build_template(term, &stfr, root_has_sig, leaf_hash);
-        let stack = match stack {
-            Witness::Stack(stack) => Witness::Stack(
+        Satisfaction::<Placeholder<Pk>>::build_template(term, &stfr, root_has_sig, leaf_hash)
+            .map_stack(|stack| {
                 WitnessTemplate::from_placeholder_stack(stack)
                     .try_completing(stfr)
-                    .expect("the same satisfier should manage to complete the template"),
-            ),
-            Witness::Unavailable => Witness::Unavailable,
-            Witness::Impossible => Witness::Impossible,
-        };
-
-        Satisfaction {
-            stack,
-            has_sig,
-            absolute_timelock,
-            relative_timelock,
-        }
+                    .expect("the same satisfier should manage to complete the template")
+            })
     }
 
     /// Produce a satisfaction(possibly malleable)
@@ -1866,32 +1886,11 @@ impl Satisfaction<Vec<u8>> {
         Pk: MiniscriptKey + ToPublicKey,
         Sat: Satisfier<Pk>,
     {
-        let Satisfaction {
-            stack,
-            has_sig,
-            absolute_timelock,
-            relative_timelock,
-        } = Satisfaction::<Placeholder<Pk>>::build_template_mall(
-            term,
-            &stfr,
-            root_has_sig,
-            leaf_hash,
-        );
-        let stack = match stack {
-            Witness::Stack(stack) => Witness::Stack(
+        Satisfaction::<Placeholder<Pk>>::build_template_mall(term, &stfr, root_has_sig, leaf_hash)
+            .map_stack(|stack| {
                 WitnessTemplate::from_placeholder_stack(stack)
                     .try_completing(stfr)
-                    .expect("the same satisfier should manage to complete the template"),
-            ),
-            Witness::Unavailable => Witness::Unavailable,
-            Witness::Impossible => Witness::Impossible,
-        };
-
-        Satisfaction {
-            stack,
-            has_sig,
-            absolute_timelock,
-            relative_timelock,
-        }
+                    .expect("the same satisfier should manage to complete the template")
+            })
     }
 }
