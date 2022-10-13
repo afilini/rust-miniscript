@@ -431,6 +431,7 @@ impl<Pk: MiniscriptKey, Ctx: ScriptContext> Miniscript<Pk, Ctx> {
         }
     }
 
+    /// Attempt to produce a non-malleable witness template given the assets available
     pub fn build_template<P: plan::AssetProvider<Pk>>(
         &self,
         provider: &P,
@@ -442,7 +443,8 @@ impl<Pk: MiniscriptKey, Ctx: ScriptContext> Miniscript<Pk, Ctx> {
         satisfy::Satisfaction::build_template(&self.node, provider, self.ty.mall.safe, &leaf_hash)
     }
 
-    pub fn build_template_malleable<P: plan::AssetProvider<Pk>>(
+    /// Attempt to produce a malleable witness template given the assets available
+    pub fn build_template_mall<P: plan::AssetProvider<Pk>>(
         &self,
         provider: &P,
     ) -> satisfy::Satisfaction<satisfy::Placeholder<Pk>>

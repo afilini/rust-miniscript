@@ -171,6 +171,8 @@ impl<Pk: MiniscriptKey, Ctx: ScriptContext> SortedMultiVec<Pk, Ctx> {
         ms.satisfy(satisfier)
     }
 
+    // TODO: build_template
+
     /// Size, in bytes of the script-pubkey. If this Miniscript is used outside
     /// of segwit (e.g. in a bare or P2SH descriptor), this quantity should be
     /// multiplied by 4 to compute the weight.

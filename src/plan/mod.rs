@@ -15,20 +15,30 @@
 //! Once you've obstained signatures, hash pre-images etc required by the plan, it can create a
 //! witness/script_sig for the input.
 
-use crate::descriptor::{Bare, Wsh, WshInner};
-use crate::miniscript::satisfy::{Placeholder, Satisfaction, Satisfier};
+use crate::descriptor::{Bare, DescriptorType, Wsh, WshInner};
+use crate::miniscript::satisfy::{Placeholder, Satisfaction, Satisfier, Witness, WitnessTemplate};
 use crate::miniscript::{hash256, Miniscript};
+use crate::util::witness_size;
 use crate::{
     DefiniteDescriptorKey, Descriptor, MiniscriptKey, ScriptContext, Terminal, ToPublicKey,
 };
 use bitcoin::hashes::{hash160, ripemd160, sha256};
+use bitcoin::util::address::WitnessVersion;
 use bitcoin::util::bip32::KeySource;
 use bitcoin::util::taproot::TapLeafHash;
 use bitcoin::{LockTime, Sequence};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-/// TODO
+/// Trait describing a present/missing lookup table for constructing witness templates
+///
+/// This trait mirrors the [`Satisfier`] trait with the difference that instad of returning the
+/// item if it's present, it only returns a boolean to indicate its presence.
+///
+/// This trait is automatically implemented for every type that is also a satisfier, and simply
+/// proxies the queries to the satisfier and returns whether an item is available or not.
+///
+/// All the methods have a default implementation that returns `false`.
 pub trait AssetProvider<Pk: MiniscriptKey> {
     /// Given a public key, look up an ECDSA signature with that key
     fn lookup_ecdsa_sig(&self, _: &Pk) -> bool {
@@ -97,7 +107,8 @@ pub trait AssetProvider<Pk: MiniscriptKey> {
     }
 }
 
-struct LoggerAssetProvider(Assets);
+/// Wrapper around [`Assets`] that logs every query and value returned
+pub struct LoggerAssetProvider(Assets);
 
 macro_rules! impl_log_method {
     ( $name:ident, $( <$ctx:ident: ScriptContext > )? $( $arg:ident : $ty:ty, )* -> $ret_ty:ty ) => {
@@ -143,13 +154,11 @@ where
     }
 
     fn lookup_raw_pkh_pk<Ctx: ScriptContext>(&self, hash: &hash160::Hash) -> Option<usize> {
-        // Ctx::pk_len includes a one-byte OP_PUSH, which we don't need here
-        Satisfier::lookup_raw_pkh_pk(self, hash).map(|p| Ctx::pk_len(&p) - 1)
+        Satisfier::lookup_raw_pkh_pk(self, hash).map(|p| Ctx::pk_len(&p))
     }
 
     fn lookup_raw_pkh_ecdsa_sig<Ctx: ScriptContext>(&self, hash: &hash160::Hash) -> Option<usize> {
-        // Ctx::pk_len includes a one-byte OP_PUSH, which we don't need here
-        Satisfier::lookup_raw_pkh_ecdsa_sig(self, hash).map(|(p, _)| Ctx::pk_len(&p) - 1)
+        Satisfier::lookup_raw_pkh_ecdsa_sig(self, hash).map(|(p, _)| Ctx::pk_len(&p))
     }
 
     fn lookup_raw_pkh_tap_leaf_script_sig(&self, hash: &(hash160::Hash, TapLeafHash)) -> bool {
@@ -178,6 +187,45 @@ where
 
     fn check_after(&self, l: LockTime) -> bool {
         Satisfier::check_after(self, l)
+    }
+}
+
+#[derive(Debug)]
+pub struct Plan {
+    pub template: WitnessTemplate<Placeholder<DefiniteDescriptorKey>>,
+    pub absolute_timelock: Option<LockTime>,
+    pub relative_timelock: Option<Sequence>,
+
+    pub(crate) desc_type: DescriptorType,
+}
+
+impl Plan {
+    pub fn satisfaction_weight(&self) -> usize {
+        self.witness_size() + self.scriptsig_size() * 4
+    }
+
+    pub fn scriptsig_size(&self) -> usize {
+        match (self.desc_type.segwit_version(), self.desc_type) {
+            // Entire witness goes in the script_sig
+            (None, _) => witness_size(self.template.as_ref()),
+            // Taproot doesn't have a "wrapped" version (scriptSig len (1))
+            (Some(WitnessVersion::V1), _) => 1,
+            // scriptSig len (1) + OP_0 (1) + OP_PUSHBYTES_20 (1) + <pk hash> (20)
+            (_, DescriptorType::ShWpkh) => 1 + 1 + 1 + 20,
+            // scriptSig len (1) + OP_0 (1) + OP_PUSHBYTES_32 (1) + <script hash> (20)
+            (_, DescriptorType::ShWsh) | (_, DescriptorType::ShWshSortedMulti) => 1 + 1 + 1 + 32,
+            // Native Segwit v0 (scriptSig len (1))
+            __ => 1,
+        }
+    }
+
+    pub fn witness_size(&self) -> usize {
+        if let Some(_) = self.desc_type.segwit_version() {
+            witness_size(self.template.as_ref())
+        } else {
+            0 // should be 1 if there's at least one segwit input in the tx, but that's out of
+              // scope as we can't possibly know that just by looking at the descriptor
+        }
     }
 }
 
@@ -240,7 +288,9 @@ impl AssetProvider<DefiniteDescriptorKey> for Assets {
 
     fn check_older(&self, s: Sequence) -> bool {
         if let Some(rt) = &self.relative_timelock {
-            return rt.partial_cmp(&s) == Some(Ordering::Less);
+            return rt.is_relative_lock_time()
+                && rt.is_height_locked() == s.is_height_locked()
+                && s <= *rt;
         }
 
         false
@@ -248,7 +298,7 @@ impl AssetProvider<DefiniteDescriptorKey> for Assets {
 
     fn check_after(&self, l: LockTime) -> bool {
         if let Some(at) = &self.absolute_timelock {
-            return at.partial_cmp(&l) == Some(Ordering::Less);
+            return l.partial_cmp(at) == Some(Ordering::Less);
         }
 
         false
@@ -278,22 +328,32 @@ impl IntoAssets for sha256::Hash {
     }
 }
 
+impl IntoAssets for Assets {
+    fn into_assets(self) -> Assets {
+        self
+    }
+}
+
 impl Assets {
-    fn new() -> Self {
+    /// Contruct an empty instance
+    pub fn new() -> Self {
         Self::default()
     }
 
-    fn add<A: IntoAssets>(mut self, asset: A) -> Self {
+    /// Add some assets
+    pub fn add<A: IntoAssets>(mut self, asset: A) -> Self {
         self.append(asset.into_assets());
         self
     }
 
-    fn older(mut self, seq: Sequence) -> Self {
+    /// Set the maximum relative timelock allowed
+    pub fn older(mut self, seq: Sequence) -> Self {
         self.relative_timelock = Some(seq);
         self
     }
 
-    fn after(mut self, lt: LockTime) -> Self {
+    /// Set the maximum absolute timelock allowed
+    pub fn after(mut self, lt: LockTime) -> Self {
         self.absolute_timelock = Some(lt);
         self
     }
@@ -313,69 +373,12 @@ impl Assets {
     }
 }
 
-impl Descriptor<DefiniteDescriptorKey> {
-    fn plan<P: AssetProvider<DefiniteDescriptorKey>>(
-        &self,
-        provider: &P,
-    ) -> Satisfaction<Placeholder<DefiniteDescriptorKey>> {
-        match *self {
-            Descriptor::Bare(ref bare) => bare.plan(provider),
-            Descriptor::Wsh(ref wsh) => wsh.plan(provider),
-            _ => todo!(),
-            /*
-            Descriptor::Pkh(ref pkh) => pkh.get_satisfaction(satisfier),
-            Descriptor::Wpkh(ref wpkh) => wpkh.get_satisfaction(satisfier),
-            Descriptor::Wsh(ref wsh) => wsh.get_satisfaction(satisfier),
-            Descriptor::Sh(ref sh) => sh.get_satisfaction(satisfier),
-            Descriptor::Tr(ref tr) => tr.get_satisfaction(satisfier),
-            */
-        }
-    }
-}
-
-impl Bare<DefiniteDescriptorKey> {
-    fn plan<P: AssetProvider<DefiniteDescriptorKey>>(
-        &self,
-        provider: &P,
-    ) -> Satisfaction<Placeholder<DefiniteDescriptorKey>> {
-        self.as_inner().plan(provider)
-    }
-}
-
-impl Wsh<DefiniteDescriptorKey> {
-    fn plan<P: AssetProvider<DefiniteDescriptorKey>>(
-        &self,
-        provider: &P,
-    ) -> Satisfaction<Placeholder<DefiniteDescriptorKey>> {
-        self.as_inner().plan(provider)
-    }
-}
-impl WshInner<DefiniteDescriptorKey> {
-    fn plan<P: AssetProvider<DefiniteDescriptorKey>>(
-        &self,
-        provider: &P,
-    ) -> Satisfaction<Placeholder<DefiniteDescriptorKey>> {
-        match self {
-            WshInner::SortedMulti(sm) => todo!(),
-            WshInner::Ms(ms) => ms.plan(provider),
-        }
-    }
-}
-
-impl<Ctx: ScriptContext> Miniscript<DefiniteDescriptorKey, Ctx> {
-    fn plan<P: AssetProvider<DefiniteDescriptorKey>>(
-        &self,
-        provider: &P,
-    ) -> Satisfaction<Placeholder<DefiniteDescriptorKey>> {
-        self.build_template(provider)
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
     use crate::miniscript::satisfy::Witness;
     use crate::*;
+    use bitcoin::{LockTime, Sequence};
     use std::str::FromStr;
 
     #[test]
@@ -388,29 +391,47 @@ mod test {
 
         let assets = Assets::new()
             .add(def_key)
-            .older(Sequence::from_height(1000));
+            .older(Sequence::from_height(12960));
 
-        let result = desc.at_derivation_index(3).plan(&assets);
-        assert!(matches!(result.stack, Witness::Stack(_)));
-        assert_eq!(result.relative_timelock, Some(bitcoin::Sequence(12960)));
+        let result = desc.at_derivation_index(3).get_plan(&assets);
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap().relative_timelock,
+            Some(bitcoin::Sequence(12960))
+        );
     }
 
     fn test_inner(
-        ms: &str,
+        desc: &str,
         keys: Vec<DefiniteDescriptorKey>,
-        tests: Vec<(Vec<usize>, Option<usize>)>,
+        tests: Vec<(
+            Vec<usize>,
+            Option<Sequence>,
+            Option<LockTime>,
+            Option<usize>,
+        )>,
     ) {
-        let ms = Miniscript::<DefiniteDescriptorKey, Segwitv0>::from_str(&ms).unwrap();
+        let desc = Descriptor::<DefiniteDescriptorKey>::from_str(&desc).unwrap();
 
-        for (key_indexes, expected) in tests {
+        for (key_indexes, older, after, expected) in tests {
             let mut assets = Assets::new();
+            if let Some(seq) = older {
+                assets = assets.older(seq);
+            }
+            if let Some(locktime) = after {
+                assets = assets.after(locktime);
+            }
             for ki in key_indexes {
                 assets = assets.add(keys[ki].clone());
             }
 
-            let result = ms.plan(&assets);
-            dbg!(&result);
-            assert_eq!(result.stack.size(), expected);
+            let result = desc.get_plan(&assets);
+            assert_eq!(
+                result.as_ref().map(|plan| plan.satisfaction_weight()),
+                expected,
+                "{:?}",
+                result
+            );
         }
     }
 
@@ -427,11 +448,15 @@ mod test {
             .unwrap(),
         ];
 
-        let tests = vec![(vec![], None), (vec![0], Some(73)), (vec![0, 1], Some(73))];
+        // expected weight: 4 (scriptSig len) + 1 (witness len) + 73 (sig)
+        let tests = vec![
+            (vec![], None, None, None),
+            (vec![0], None, None, Some(4 + 1 + 73)),
+            (vec![0, 1], None, None, Some(4 + 1 + 73)),
+        ];
 
-        let ms = format!("t:or_c(pk({}),v:pkh({}))", keys[0], keys[1]);
-
-        test_inner(&ms, keys, tests);
+        let desc = format!("wsh(t:or_c(pk({}),v:pkh({})))", keys[0], keys[1]);
+        test_inner(&desc, keys, tests);
     }
 
     #[test]
@@ -447,32 +472,113 @@ mod test {
             .unwrap(),
         ];
 
-        let tests = vec![(vec![], None), (vec![0], None), (vec![0, 1], Some(73 * 2))];
+        // expected weight: 4 (scriptSig len) + 1 (witness len) + 73 (sig) * 2
+        let tests = vec![
+            (vec![], None, None, None),
+            (vec![0], None, None, None),
+            (vec![0, 1], None, None, Some(4 + 1 + 73 * 2)),
+        ];
 
-        let ms = format!("and_v(v:pk({}),pk({}))", keys[0], keys[1]);
-
-        test_inner(&ms, keys, tests);
+        let desc = format!("wsh(and_v(v:pk({}),pk({})))", keys[0], keys[1]);
+        test_inner(&desc, keys, tests);
     }
 
-    // #[test]
-    // fn test_multi() {
-    //     let keys = vec![
-    //         DefiniteDescriptorKey::from_str("02c2fd50ceae468857bb7eb32ae9cd4083e6c7e42fbbec179d81134b3e3830586c").unwrap(),
-    //         DefiniteDescriptorKey::from_str("0257f4a2816338436cccabc43aa724cf6e69e43e84c3c8a305212761389dd73a8a").unwrap(),
-    //         DefiniteDescriptorKey::from_str("03500a2b48b0f66c8183cc0d6645ab21cc19c7fad8a33ff04d41c3ece54b0bc1c5").unwrap(),
-    //         DefiniteDescriptorKey::from_str("033ad2d191da4f39512adbaac320cae1f12f298386a4e9d43fd98dec7cf5db2ac9").unwrap(),
-    //     ];
+    #[test]
+    fn test_multi() {
+        let keys = vec![
+            DefiniteDescriptorKey::from_str(
+                "02c2fd50ceae468857bb7eb32ae9cd4083e6c7e42fbbec179d81134b3e3830586c",
+            )
+            .unwrap(),
+            DefiniteDescriptorKey::from_str(
+                "0257f4a2816338436cccabc43aa724cf6e69e43e84c3c8a305212761389dd73a8a",
+            )
+            .unwrap(),
+            DefiniteDescriptorKey::from_str(
+                "03500a2b48b0f66c8183cc0d6645ab21cc19c7fad8a33ff04d41c3ece54b0bc1c5",
+            )
+            .unwrap(),
+            DefiniteDescriptorKey::from_str(
+                "033ad2d191da4f39512adbaac320cae1f12f298386a4e9d43fd98dec7cf5db2ac9",
+            )
+            .unwrap(),
+        ];
 
-    //     let tests = vec![
-    //         (vec![], None),
-    //         (vec![0, 1], None),
-    //         (vec![0, 1, 3], Some(34 * 3)),
-    //     ];
+        let tests = vec![
+            (vec![], None, None, None),
+            (vec![0, 1], None, None, None),
+            // expected weight: 4 (scriptSig len) + 1 (witness len) + 73 (sig) * 3 + 1 (dummy push)
+            (vec![0, 1, 3], None, None, Some(4 + 1 + 73 * 3 + 1)),
+        ];
 
-    //     let ms = format!("multi(3,{},{},{},{})", keys[0], keys[1], keys[2], keys[3]);
+        let desc = format!(
+            "wsh(multi(3,{},{},{},{}))",
+            keys[0], keys[1], keys[2], keys[3]
+        );
+        test_inner(&desc, keys, tests);
+    }
 
-    //     test_inner(&ms, keys, tests);
-    // }
+    #[test]
+    fn test_thresh() {
+        let keys = vec![
+            DefiniteDescriptorKey::from_str(
+                "02c2fd50ceae468857bb7eb32ae9cd4083e6c7e42fbbec179d81134b3e3830586c",
+            )
+            .unwrap(),
+            DefiniteDescriptorKey::from_str(
+                "0257f4a2816338436cccabc43aa724cf6e69e43e84c3c8a305212761389dd73a8a",
+            )
+            .unwrap(),
+        ];
+
+        let tests = vec![
+            (vec![], None, None, None),
+            (vec![], Some(Sequence(1000)), None, None),
+            (vec![0], None, None, None),
+            // expected weight: 4 (scriptSig len) + 1 (witness len) + 73 (sig) + 1 (OP_0) + 1 (OP_ZERO)
+            (vec![0], Some(Sequence(1000)), None, Some(80)),
+            // expected weight: 4 (scriptSig len) + 1 (witness len) + 73 (sig) * 2 + 2 (OP_PUSHBYTE_1 0x01)
+            (vec![0, 1], None, None, Some(153)),
+            // expected weight: 4 (scriptSig len) + 1 (witness len) + 73 (sig) + 1 (OP_0) + 1 (OP_ZERO)
+            (vec![0, 1], Some(Sequence(1000)), None, Some(80)),
+            // expected weight: 4 (scriptSig len) + 1 (witness len) + 73 (sig) * 2 + 2 (OP_PUSHBYTE_1 0x01)
+            (
+                vec![0, 1],
+                Some(Sequence::from_512_second_intervals(10)),
+                None,
+                Some(153),
+            ), // incompatible timelock
+        ];
+
+        let desc = format!(
+            "wsh(thresh(2,pk({}),s:pk({}),snl:older(144)))",
+            keys[0], keys[1]
+        );
+        test_inner(&desc, keys.clone(), tests);
+
+        let tests = vec![
+            // expected weight: 4 (scriptSig len) + 1 (witness len) + 73 (sig) + 1 (OP_0) + 1 (OP_ZERO)
+            (
+                vec![0],
+                None,
+                Some(LockTime::from_height(1000).unwrap()),
+                Some(80),
+            ),
+            // expected weight: 4 (scriptSig len) + 1 (witness len) + 73 (sig) * 2 + 2 (OP_PUSHBYTE_1 0x01)
+            (
+                vec![0, 1],
+                None,
+                Some(LockTime::from_time(500_001_000).unwrap()),
+                Some(153),
+            ), // incompatible timelock
+        ];
+
+        let desc = format!(
+            "wsh(thresh(2,pk({}),s:pk({}),snl:after(144)))",
+            keys[0], keys[1]
+        );
+        test_inner(&desc, keys, tests);
+    }
 }
 
 // Esempio di API

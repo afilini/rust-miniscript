@@ -35,6 +35,7 @@ use sync::Arc;
 
 use self::checksum::verify_checksum;
 use crate::miniscript::{Legacy, Miniscript, Segwitv0};
+use crate::plan::{AssetProvider, Plan};
 use crate::prelude::*;
 use crate::{
     expression, hash256, miniscript, BareCtx, Error, ForEachKey, MiniscriptKey, Satisfier,
@@ -467,6 +468,46 @@ impl<Pk: MiniscriptKey + ToPublicKey> Descriptor<Pk> {
         txin.witness = Witness::from_vec(witness);
         txin.script_sig = script_sig;
         Ok(())
+    }
+}
+
+impl Descriptor<DefiniteDescriptorKey> {
+    /// Returns a plan if the provided assets are sufficient to produce a non-malleable satisfaction
+    pub fn get_plan<P>(&self, provider: &P) -> Option<Plan>
+    where
+        P: AssetProvider<DefiniteDescriptorKey>,
+    {
+        match *self {
+            Descriptor::Bare(ref bare) => bare.get_plan(provider),
+            Descriptor::Wsh(ref wsh) => wsh.get_plan(provider),
+            _ => todo!(),
+            /*
+            Descriptor::Pkh(ref pkh) => pkh.get_satisfaction(satisfier),
+            Descriptor::Wpkh(ref wpkh) => wpkh.get_satisfaction(satisfier),
+            Descriptor::Wsh(ref wsh) => wsh.get_satisfaction(satisfier),
+            Descriptor::Sh(ref sh) => sh.get_satisfaction(satisfier),
+            Descriptor::Tr(ref tr) => tr.get_satisfaction(satisfier),
+            */
+        }
+    }
+
+    /// Returns a plan if the provided assets are sufficient to produce a malleable satisfaction
+    pub fn get_plan_mall<P>(&self, provider: &P) -> Option<Plan>
+    where
+        P: AssetProvider<DefiniteDescriptorKey>,
+    {
+        match *self {
+            Descriptor::Bare(ref bare) => bare.get_plan_mall(provider),
+            Descriptor::Wsh(ref wsh) => wsh.get_plan_mall(provider),
+            _ => todo!(),
+            /*
+            Descriptor::Pkh(ref pkh) => pkh.get_satisfaction(satisfier),
+            Descriptor::Wpkh(ref wpkh) => wpkh.get_satisfaction(satisfier),
+            Descriptor::Wsh(ref wsh) => wsh.get_satisfaction(satisfier),
+            Descriptor::Sh(ref sh) => sh.get_satisfaction(satisfier),
+            Descriptor::Tr(ref tr) => tr.get_satisfaction(satisfier),
+            */
+        }
     }
 }
 

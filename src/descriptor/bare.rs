@@ -24,8 +24,10 @@ use bitcoin::blockdata::script;
 use bitcoin::{Address, Network, Script};
 
 use super::checksum::{desc_checksum, verify_checksum};
+use crate::descriptor::{DefiniteDescriptorKey, DescriptorType};
 use crate::expression::{self, FromTree};
 use crate::miniscript::context::ScriptContext;
+use crate::plan::{AssetProvider, Plan};
 use crate::policy::{semantic, Liftable};
 use crate::prelude::*;
 use crate::util::{varint_len, witness_to_scriptsig};
@@ -121,6 +123,28 @@ impl<Pk: MiniscriptKey + ToPublicKey> Bare<Pk> {
         let script_sig = witness_to_scriptsig(&ms);
         let witness = vec![];
         Ok((witness, script_sig))
+    }
+}
+
+impl Bare<DefiniteDescriptorKey> {
+    /// Returns a plan if the provided assets are sufficient to produce a non-malleable satisfaction
+    pub fn get_plan<P>(&self, provider: &P) -> Option<Plan>
+    where
+        P: AssetProvider<DefiniteDescriptorKey>,
+    {
+        self.ms
+            .build_template(provider)
+            .into_plan(DescriptorType::Bare)
+    }
+
+    /// Returns a plan if the provided assets are sufficient to produce a malleable satisfaction
+    pub fn get_plan_mall<P>(&self, provider: &P) -> Option<Plan>
+    where
+        P: AssetProvider<DefiniteDescriptorKey>,
+    {
+        self.ms
+            .build_template_mall(provider)
+            .into_plan(DescriptorType::Bare)
     }
 }
 

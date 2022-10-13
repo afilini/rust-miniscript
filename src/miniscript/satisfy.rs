@@ -18,7 +18,7 @@
 //! scriptpubkeys.
 //!
 
-use core::{cmp, fmt, i64, mem};
+use core::{cmp, i64, mem};
 
 use bitcoin::hashes::hash160;
 use bitcoin::secp256k1::XOnlyPublicKey;
@@ -27,10 +27,13 @@ use bitcoin::{LockTime, PackedLockTime, Sequence};
 use sync::Arc;
 
 use super::context::SigType;
-use crate::plan::AssetProvider;
+use crate::descriptor::DescriptorType;
+use crate::plan::{AssetProvider, Plan};
 use crate::prelude::*;
-use crate::util::{witness_size, ItemSize};
-use crate::{Miniscript, MiniscriptKey, ScriptContext, Terminal, ToPublicKey};
+use crate::util::witness_size;
+use crate::{
+    DefiniteDescriptorKey, Miniscript, MiniscriptKey, ScriptContext, Terminal, ToPublicKey,
+};
 
 /// Type alias for 32 byte Preimage.
 pub type Preimage32 = [u8; 32];
@@ -504,8 +507,10 @@ impl_tuple_satisfier!(A, B, C, D, E, F, G, H);
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Placeholder for some data in a [`WitnessTemplate`]
 pub enum Placeholder<Pk: MiniscriptKey> {
-    /// Public key and size
-    Pubkey(hash160::Hash, usize),
+    /// Public key and its size
+    Pubkey(Pk, usize),
+    /// Public key hash and its size
+    PubkeyHash(hash160::Hash, usize),
     /// ECDSA signature given the raw pubkey
     EcdsaSigPk(Pk),
     /// ECDSA signature given the pubkey hash
@@ -541,7 +546,8 @@ impl<Pk: MiniscriptKey + ToPublicKey> Placeholder<Pk> {
         match self {
             // TODO: creiamo pubkey sia da lookup_raw_pkh_pk and lookup_raw_pkh_ecdsa_sig, quindi
             // mo devo guardare in entrambe
-            Placeholder::Pubkey(pkh, size) => sat
+            Placeholder::Pubkey(pk, _) => Some(pk.to_public_key().to_bytes()),
+            Placeholder::PubkeyHash(pkh, size) => sat
                 .lookup_raw_pkh_pk(pkh)
                 .map(|p| p.to_public_key())
                 .or(sat.lookup_raw_pkh_ecdsa_sig(pkh).map(|(p, _)| p))
@@ -608,8 +614,15 @@ impl<Pk: MiniscriptKey> PartialSatisfaction<Pk> {
 ///   template
 /// - `PartialSatisfaction<Pk>` indicates the witness contains some placeholders and some actual
 ///   pieces of data
+#[derive(Debug, Clone)]
 pub struct WitnessTemplate<I> {
     stack: Vec<I>,
+}
+
+impl<I> AsRef<[I]> for WitnessTemplate<I> {
+    fn as_ref(&self) -> &[I] {
+        &self.stack
+    }
 }
 
 impl<Pk: MiniscriptKey + ToPublicKey> WitnessTemplate<Placeholder<Pk>> {
@@ -630,7 +643,7 @@ impl<Pk: MiniscriptKey + ToPublicKey> WitnessTemplate<Placeholder<Pk>> {
     }
 
     /// Being an interactive satisfaction session
-    pub fn begin_interactive_satisfaction(self) -> WitnessTemplate<PartialSatisfaction<Pk>> {
+    pub fn interactive_satisfaction(self) -> WitnessTemplate<PartialSatisfaction<Pk>> {
         WitnessTemplate {
             stack: self
                 .stack
@@ -682,23 +695,6 @@ impl<Pk: MiniscriptKey + ToPublicKey> WitnessTemplate<PartialSatisfaction<Pk>> {
                 .collect())
         } else {
             Err((WitnessTemplate { stack }, unsatisfied))
-        }
-    }
-}
-
-impl<T: ItemSize> WitnessTemplate<T> {
-    /// Returns the size **in bytes** of the witness template
-    pub fn size(&self) -> usize {
-        witness_size(&self.stack)
-    }
-}
-
-impl<T: ItemSize> Witness<T> {
-    /// Returns the size **in bytes** of the witness when available
-    pub fn size(&self) -> Option<usize> {
-        match self {
-            Witness::Stack(ref stack) => Some(witness_size(stack)),
-            _ => None,
         }
     }
 }
@@ -760,7 +756,7 @@ impl<Pk: MiniscriptKey + ToPublicKey> Witness<Placeholder<Pk>> {
         pkh: &hash160::Hash,
     ) -> Self {
         if let Some(pk_len) = sat.lookup_raw_pkh_pk::<Ctx>(pkh) {
-            Witness::Stack(vec![Placeholder::Pubkey(pkh.clone(), pk_len)])
+            Witness::Stack(vec![Placeholder::PubkeyHash(pkh.clone(), pk_len)])
         } else {
             // public key hashes are assumed to be unavailable
             // instead of impossible since it is the same as pub-key hashes
@@ -776,7 +772,7 @@ impl<Pk: MiniscriptKey + ToPublicKey> Witness<Placeholder<Pk>> {
         if let Some(pk_len) = sat.lookup_raw_pkh_ecdsa_sig::<Ctx>(pkh) {
             Witness::Stack(vec![
                 Placeholder::EcdsaSigHash(pkh.clone()),
-                Placeholder::Pubkey(pkh.clone(), pk_len),
+                Placeholder::PubkeyHash(pkh.clone(), pk_len),
             ])
         } else {
             Witness::Impossible
@@ -1802,6 +1798,21 @@ impl<Pk: MiniscriptKey + ToPublicKey> Satisfaction<Placeholder<Pk>> {
                 relative_timelock: None,
                 absolute_timelock: None,
             },
+        }
+    }
+}
+
+impl Satisfaction<Placeholder<DefiniteDescriptorKey>> {
+    pub(crate) fn into_plan(self, desc_type: DescriptorType) -> Option<Plan> {
+        if let Witness::Stack(stack) = self.stack {
+            Some(Plan {
+                desc_type,
+                template: WitnessTemplate::from_placeholder_stack(stack),
+                absolute_timelock: self.absolute_timelock.map(Into::into),
+                relative_timelock: self.relative_timelock,
+            })
+        } else {
+            None
         }
     }
 }
