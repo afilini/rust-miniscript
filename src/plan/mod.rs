@@ -233,8 +233,8 @@ impl Plan {
 
 #[derive(Debug, Default)]
 pub struct Assets {
-    // TODO: tap key_spend sig
     keys: HashMap<hash160::Hash, DefiniteDescriptorKey>,
+    tap_key_spend_sigs: HashMap<hash160::Hash, bitcoin::SchnorrSig>,
     ecdsa_signatures: HashMap<hash160::Hash, (bitcoin::EcdsaSig, usize)>,
     schnorr_signatures: HashMap<(hash160::Hash, TapLeafHash), (bitcoin::SchnorrSig, usize)>,
     sha256_preimages: HashSet<sha256::Hash>,
@@ -254,7 +254,10 @@ impl AssetProvider<DefiniteDescriptorKey> for Assets {
     }
 
     fn lookup_tap_key_spend_sig(&self, pk: &DefiniteDescriptorKey) -> bool {
-        false
+        let pkh = pk.to_pubkeyhash(SigType::Ecdsa);
+        let we_have_pk = self.keys.contains_key(&pkh);
+        let we_have_sig = self.tap_key_spend_sigs.contains_key(&pkh);
+        we_have_pk || we_have_sig
     }
 
     fn lookup_tap_leaf_script_sig(
