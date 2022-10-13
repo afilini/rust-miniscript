@@ -15,16 +15,18 @@
 //! Once you've obstained signatures, hash pre-images etc required by the plan, it can create a
 //! witness/script_sig for the input.
 
-use crate::descriptor::{Bare, DescriptorType, Wsh, WshInner};
+use crate::descriptor::{Bare, DescriptorType, InnerXKey, Wsh, WshInner};
 use crate::miniscript::satisfy::{Placeholder, Satisfaction, Satisfier, Witness, WitnessTemplate};
-use crate::miniscript::{hash256, Miniscript};
+use crate::miniscript::{context::SigType, hash256, Miniscript};
 use crate::util::witness_size;
 use crate::{
-    DefiniteDescriptorKey, Descriptor, MiniscriptKey, ScriptContext, Terminal, ToPublicKey,
+    DefiniteDescriptorKey, Descriptor, DescriptorPublicKey, MiniscriptKey, ScriptContext, Terminal,
+    ToPublicKey,
 };
-use bitcoin::hashes::{hash160, ripemd160, sha256};
+use bitcoin::hashes::{hash160, ripemd160, sha256, Hash};
 use bitcoin::util::address::WitnessVersion;
-use bitcoin::util::bip32::KeySource;
+use bitcoin::util::bip32::{DerivationPath, Fingerprint, KeySource};
+use bitcoin::util::key::Secp256k1;
 use bitcoin::util::taproot::TapLeafHash;
 use bitcoin::{LockTime, Sequence};
 use std::cmp::Ordering;
@@ -231,10 +233,10 @@ impl Plan {
 
 #[derive(Debug, Default)]
 pub struct Assets {
-    // TODO: add signatures as well
     // TODO: tap key_spend sig
-    // TODO: key hashes
-    keys: HashSet<DefiniteDescriptorKey>, // poi lo mettiamo generico con CanDerive per le DescPubKey
+    keys: HashMap<hash160::Hash, DefiniteDescriptorKey>,
+    ecdsa_signatures: HashMap<hash160::Hash, (bitcoin::EcdsaSig, usize)>,
+    schnorr_signatures: HashMap<(hash160::Hash, TapLeafHash), (bitcoin::SchnorrSig, usize)>,
     sha256_preimages: HashSet<sha256::Hash>,
     hash256_preimages: HashSet<hash256::Hash>,
     ripemd160_preimages: HashSet<ripemd160::Hash>,
@@ -245,29 +247,41 @@ pub struct Assets {
 
 impl AssetProvider<DefiniteDescriptorKey> for Assets {
     fn lookup_ecdsa_sig(&self, pk: &DefiniteDescriptorKey) -> bool {
-        // TODO: match using keysource
-        self.keys.contains(pk)
+        let pkh = pk.to_pubkeyhash(SigType::Ecdsa);
+        let we_have_pk = self.keys.contains_key(&pkh);
+        let we_have_sig = self.ecdsa_signatures.contains_key(&pkh);
+        we_have_pk || we_have_sig
     }
 
     fn lookup_tap_key_spend_sig(&self, pk: &DefiniteDescriptorKey) -> bool {
         false
     }
 
-    fn lookup_tap_leaf_script_sig(&self, pk: &DefiniteDescriptorKey, _: &TapLeafHash) -> bool {
-        // TODO: match using keysource
-        self.keys.contains(pk)
+    fn lookup_tap_leaf_script_sig(
+        &self,
+        pk: &DefiniteDescriptorKey,
+        tap_leaf_hash: &TapLeafHash,
+    ) -> bool {
+        let pkh = pk.to_pubkeyhash(SigType::Schnorr);
+        let we_have_pk = self.keys.contains_key(&pkh);
+        let we_have_sig = self.schnorr_signatures.contains_key(&(pkh, *tap_leaf_hash));
+        we_have_pk || we_have_sig
     }
 
     fn lookup_raw_pkh_pk<Ctx: ScriptContext>(&self, hash: &hash160::Hash) -> Option<usize> {
-        None
+        self.keys.get(hash).map(|p| Ctx::pk_len(p))
     }
 
     fn lookup_raw_pkh_ecdsa_sig<Ctx: ScriptContext>(&self, hash: &hash160::Hash) -> Option<usize> {
-        None
+        let we_have_pk = self.keys.get(hash).map(|p| Ctx::pk_len(p));
+        let we_have_sig = self.ecdsa_signatures.get(hash).map(|(_, l)| *l);
+        we_have_pk.or(we_have_sig)
     }
 
     fn lookup_raw_pkh_tap_leaf_script_sig(&self, hash: &(hash160::Hash, TapLeafHash)) -> bool {
-        false
+        let we_have_pk = self.keys.contains_key(&hash.0);
+        let we_have_sig = self.schnorr_signatures.contains_key(&hash);
+        we_have_pk || we_have_sig
     }
 
     fn lookup_sha256(&self, hash: &sha256::Hash) -> bool {
@@ -311,8 +325,9 @@ pub trait IntoAssets {
 
 impl IntoAssets for DefiniteDescriptorKey {
     fn into_assets(self) -> Assets {
+        let pkh = self.to_pubkeyhash(SigType::Ecdsa);
         Assets {
-            keys: vec![self].into_iter().collect(),
+            keys: vec![(pkh, self)].into_iter().collect(),
             ..Default::default()
         }
     }
