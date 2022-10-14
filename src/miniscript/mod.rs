@@ -1274,14 +1274,10 @@ mod tests {
         for (ms_str, absolute_timelock, relative_timelock) in test_cases {
             let ms = Miniscript::<bitcoin::PublicKey, Tap>::from_str(&ms_str).unwrap();
             let template = ms.build_template(&s);
-            assert!(
-                matches!(
-                    template.stack,
-                    crate::miniscript::satisfy::Witness::Stack(_)
-                ),
-                "{}",
-                ms_str
-            );
+            match template.stack {
+                crate::miniscript::satisfy::Witness::Stack(_) => {}
+                _ => panic!("Should be possible"),
+            }
             assert_eq!(template.absolute_timelock, absolute_timelock, "{}", ms_str);
             assert_eq!(template.relative_timelock, relative_timelock, "{}", ms_str);
         }
