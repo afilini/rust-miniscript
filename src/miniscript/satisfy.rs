@@ -607,7 +607,10 @@ pub enum PartialSatisfaction<Pk: MiniscriptKey> {
 impl<Pk: MiniscriptKey> PartialSatisfaction<Pk> {
     /// Whether the item is a placeholder
     pub fn is_placeholder(&self) -> bool {
-        matches!(self, PartialSatisfaction::Placeholder(_))
+        match &self {
+            PartialSatisfaction::Placeholder(_) => true,
+            _ => false,
+        }
     }
 
     /// Whether the item is data
