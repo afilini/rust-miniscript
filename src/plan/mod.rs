@@ -115,7 +115,7 @@ pub struct LoggerAssetProvider(Assets);
 macro_rules! impl_log_method {
     ( $name:ident, $( <$ctx:ident: ScriptContext > )? $( $arg:ident : $ty:ty, )* -> $ret_ty:ty ) => {
         fn $name $( <$ctx: ScriptContext> )? ( &self, $( $arg:$ty ),* ) -> $ret_ty {
-            let ret = self.0.$name $( ::<$ctx> )*( $( $arg ),* );
+            let ret = (self.0).$name $( ::<$ctx> )*( $( $arg ),* );
             dbg!(stringify!( $name ), ( $( $arg ),* ), &ret);
 
             ret
