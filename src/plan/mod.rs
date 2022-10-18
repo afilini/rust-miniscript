@@ -192,7 +192,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Plan {
     pub template: WitnessTemplate<Placeholder<DefiniteDescriptorKey>>,
     pub absolute_timelock: Option<LockTime>,
@@ -202,6 +202,10 @@ pub struct Plan {
 }
 
 impl Plan {
+    pub fn witness_version(&self) -> Option<WitnessVersion> {
+        self.desc_type.segwit_version()
+    }
+
     pub fn satisfaction_weight(&self) -> usize {
         self.witness_size() + self.scriptsig_size() * 4
     }
@@ -328,9 +332,23 @@ pub trait IntoAssets {
 
 impl IntoAssets for DefiniteDescriptorKey {
     fn into_assets(self) -> Assets {
-        let pkh = self.to_pubkeyhash(SigType::Ecdsa);
+        vec![self].into_assets()
+    }
+}
+
+impl IntoAssets for Vec<DefiniteDescriptorKey> {
+    fn into_assets(self) -> Assets {
         Assets {
-            keys: vec![(pkh, self)].into_iter().collect(),
+            keys: self
+                .into_iter()
+                .map(|pk| {
+                    vec![
+                        (pk.to_pubkeyhash(SigType::Ecdsa), pk.clone()),
+                        (pk.to_pubkeyhash(SigType::Schnorr), pk),
+                    ]
+                })
+                .flatten()
+                .collect(),
             ..Default::default()
         }
     }
