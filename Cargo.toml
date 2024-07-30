@@ -26,7 +26,7 @@ bech32 = { version = "0.11.0", default-features = false }
 bitcoin = { version = "0.32.0", default-features = false }
 
 # Do NOT use this as a feature! Use the `serde` feature instead.
-actual-serde = { package = "serde", version = "1.0.103", optional = true }
+actual-serde = { package = "serde", version = "1.0.103", optional = true, default-features = false }
 
 [dev-dependencies]
 serde_test = "1.0.147"
