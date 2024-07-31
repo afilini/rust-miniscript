@@ -506,7 +506,15 @@ impl<Pk: MiniscriptKey, Ctx: ScriptContext> Miniscript<Pk, Ctx> {
                     Terminal::MultiA(thresh.translate_ref(|k| t.pk(k))?)
                 }
             };
-            let new_ms = Miniscript::from_ast(new_term).map_err(TranslateErr::OuterError)?;
+            // let new_ms = Miniscript::from_ast(new_term).map_err(TranslateErr::OuterError)?;
+            let new_ms = Miniscript {
+                //directly copying the type and ext is safe because translating public
+                //key should not change any properties
+                ty: self.ty,
+                ext: self.ext,
+                node: new_term,
+                phantom: PhantomData,
+            };
             translated.push(Arc::new(new_ms));
         }
 

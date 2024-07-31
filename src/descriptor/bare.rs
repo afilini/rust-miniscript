@@ -42,6 +42,10 @@ impl<Pk: MiniscriptKey> Bare<Pk> {
         Ok(Self { ms })
     }
 
+    pub(crate) fn new_no_check(ms: Miniscript<Pk, BareCtx>) -> Self {
+        Bare { ms }
+    }
+
     /// get the inner
     pub fn into_inner(self) -> Miniscript<Pk, BareCtx> { self.ms }
 
@@ -201,7 +205,7 @@ where
     where
         T: Translator<P, Q, E>,
     {
-        Bare::new(self.ms.translate_pk(t)?).map_err(TranslateErr::OuterError)
+        Ok(Bare::new_no_check(self.ms.translate_pk(t)?))
     }
 }
 
@@ -220,6 +224,10 @@ impl<Pk: MiniscriptKey> Pkh<Pk> {
             Ok(()) => Ok(Pkh { pk }),
             Err(e) => Err(e),
         }
+    }
+
+    pub(crate) fn new_no_check(pk: Pk) -> Self {
+        Pkh { pk }
     }
 
     /// Get a reference to the inner key
@@ -403,10 +411,6 @@ where
     where
         T: Translator<P, Q, E>,
     {
-        let res = Pkh::new(t.pk(&self.pk)?);
-        match res {
-            Ok(pk) => Ok(pk),
-            Err(e) => Err(TranslateErr::OuterError(Error::from(e))),
-        }
+        Ok(Pkh::new_no_check(t.pk(&self.pk)?))
     }
 }

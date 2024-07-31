@@ -184,6 +184,10 @@ impl<Pk: MiniscriptKey> Tr<Pk> {
         }
     }
 
+    pub(crate) fn new_no_check(internal_key: Pk, tree: Option<TapTree<Pk>>) -> Self {
+        Self { internal_key, tree, spend_info: Mutex::new(None) }
+    }
+
     /// Obtain the internal key of [`Tr`] descriptor
     pub fn internal_key(&self) -> &Pk { &self.internal_key }
 
@@ -667,8 +671,7 @@ where
             Some(tree) => Some(tree.translate_helper(translate)?),
             None => None,
         };
-        let translate_desc = Tr::new(translate.pk(&self.internal_key)?, tree)
-            .map_err(|e| TranslateErr::OuterError(e))?;
+        let translate_desc = Tr::new_no_check(translate.pk(&self.internal_key)?, tree);
         Ok(translate_desc)
     }
 }

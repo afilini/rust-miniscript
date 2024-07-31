@@ -327,6 +327,10 @@ impl<Pk: MiniscriptKey> Wpkh<Pk> {
         }
     }
 
+    pub(crate) fn new_no_check(pk: Pk) -> Self {
+        Wpkh { pk }
+    }
+
     /// Get the inner key
     pub fn into_inner(self) -> Pk { self.pk }
 
@@ -521,10 +525,6 @@ where
     where
         T: Translator<P, Q, E>,
     {
-        let res = Wpkh::new(t.pk(&self.pk)?);
-        match res {
-            Ok(pk) => Ok(pk),
-            Err(e) => Err(TranslateErr::OuterError(Error::from(e))),
-        }
+        Ok(Wpkh::new_no_check(t.pk(&self.pk)?))
     }
 }

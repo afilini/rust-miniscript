@@ -330,7 +330,7 @@ pub enum TranslateErr<E> {
     /// Error in the final translated structure. In some cases, the translated
     /// structure might not be valid under the given context. For example, translating
     /// from string keys to x-only keys in wsh descriptors.
-    OuterError(Error),
+    OuterError(()),
 }
 
 impl<E> TranslateErr<E> {

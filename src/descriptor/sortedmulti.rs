@@ -89,7 +89,7 @@ impl<Pk: MiniscriptKey, Ctx: ScriptContext> SortedMultiVec<Pk, Ctx> {
             inner: self.inner.translate_ref(|pk| t.pk(pk))?,
             phantom: PhantomData,
         };
-        ret.constructor_check().map_err(TranslateErr::OuterError)
+        Ok(ret)
     }
 
     /// The threshold value for the multisig.
